@@ -36,6 +36,7 @@
 #include "paimon/common/predicate/literal_converter.h"
 #include "paimon/common/types/data_field.h"
 #include "paimon/common/utils/field_type_utils.h"
+#include "paimon/core/bucket/bucket_selector.h"
 #include "paimon/core/io/data_file_meta.h"
 #include "paimon/core/manifest/file_entry.h"
 #include "paimon/core/manifest/file_kind.h"
@@ -46,6 +47,7 @@
 #include "paimon/core/partition/partition_info.h"
 #include "paimon/core/stats/simple_stats.h"
 #include "paimon/core/stats/simple_stats_evolution.h"
+#include "paimon/core/table/bucket_mode.h"
 #include "paimon/core/utils/branch_manager.h"
 #include "paimon/core/utils/duration.h"
 #include "paimon/core/utils/field_mapping.h"
@@ -500,6 +502,16 @@ Result<bool> FileStoreScan::FilterManifestFileMeta(const ManifestFileMeta& manif
                                bucket_filter_.value() > max_bucket.value())) {
             return false;
         }
+        const std::optional<int32_t>& total_buckets = manifest.TotalBuckets();
+        if (bucket_selector_ && total_buckets) {
+            PAIMON_ASSIGN_OR_RAISE(bool may_contain,
+                                   bucket_selector_->MayContain(total_buckets.value(),
+                                                                min_bucket.value(),
+                                                                max_bucket.value()));
+            if (!may_contain) {
+                return false;
+            }
+        }
     }
     // filter by partition filter
 
@@ -557,6 +569,14 @@ Result<bool> FileStoreScan::FilterManifestEntry(const ManifestEntry& entry) cons
     if (bucket_filter_ != std::nullopt && entry.Bucket() != bucket_filter_.value()) {
         return false;
     }
+    if (bucket_selector_) {
+        PAIMON_ASSIGN_OR_RAISE(
+            bool selected,
+            bucket_selector_->Select(entry.Partition(), entry.Bucket(), entry.TotalBuckets()));
+        if (!selected) {
+            return false;
+        }
+    }
     if (level_filter_ != nullptr && !level_filter_(entry.Level())) {
         return false;
     }
@@ -608,6 +628,18 @@ Status FileStoreScan::SplitAndSetFilter(const std::vector<std::string>& partitio
             CreatePartitionPredicate(partition_keys, core_options_.GetPartitionDefaultName(),
                                      arrow_schema, scan_filters->GetPartitionFilters()));
     }
+    return Status::OK();
+}
+
+Status FileStoreScan::SetBucketSelector(const std::shared_ptr<ScanFilter>& scan_filters) {
+    BucketMode bucket_mode = ResolveBucketMode(core_options_.GetBucket(), table_schema_);
+    if (bucket_mode != BucketMode::HASH_FIXED && bucket_mode != BucketMode::POSTPONE_MODE) {
+        return Status::OK();
+    }
+    PAIMON_ASSIGN_OR_RAISE(
+        bucket_selector_,
+        BucketSelector::Create(scan_filters->GetPredicate(), table_schema_,
+                               core_options_.GetBucketFunctionType(), pool_));
     return Status::OK();
 }
 

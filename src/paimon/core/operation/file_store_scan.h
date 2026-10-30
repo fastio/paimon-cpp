@@ -59,6 +59,7 @@ class Schema;
 }  // namespace arrow
 
 namespace paimon {
+class BucketSelector;
 class CacheKey;
 class Executor;
 class FileKind;
@@ -234,13 +235,9 @@ class FileStoreScan {
                              const std::shared_ptr<arrow::Schema>& arrow_schema,
                              const std::shared_ptr<ScanFilter>& scan_filters);
 
-    /// Set the bucket filter derived from predicate analysis (e.g., BucketSelectConverter).
-    /// Only sets the filter if no explicit bucket filter was already set.
-    void SetBucketFilterIfAbsent(int32_t bucket) {
-        if (!bucket_filter_.has_value()) {
-            bucket_filter_ = bucket;
-        }
-    }
+    /// Restricts the scan to the buckets the full scan predicate can match. Only fixed and
+    /// postpone bucket tables hash their bucket keys into buckets.
+    Status SetBucketSelector(const std::shared_ptr<ScanFilter>& scan_filters);
 
     // When schema evolves, predicates might contain fields requiring casting. To avoid false
     // negatives when filtering by stats, we exclude those fields from predicate.
@@ -321,6 +318,7 @@ class FileStoreScan {
     std::shared_ptr<PredicateFilter> partition_filter_;
     std::shared_ptr<Executor> executor_;
     std::optional<int32_t> bucket_filter_;
+    std::shared_ptr<BucketSelector> bucket_selector_;
     std::function<bool(int32_t)> level_filter_;
     std::optional<Snapshot> specified_snapshot_;
     std::shared_ptr<Metrics> metrics_;

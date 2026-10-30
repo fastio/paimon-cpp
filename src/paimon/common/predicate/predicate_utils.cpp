@@ -94,6 +94,16 @@ std::vector<std::shared_ptr<Predicate>> PredicateUtils::SplitAnd(
     return result;
 }
 
+std::vector<std::shared_ptr<Predicate>> PredicateUtils::SplitOr(
+    const std::shared_ptr<Predicate>& predicate) {
+    std::vector<std::shared_ptr<Predicate>> result;
+    if (predicate == nullptr) {
+        return result;
+    }
+    SplitCompound(Function::Type::OR, predicate, &result);
+    return result;
+}
+
 Result<std::shared_ptr<Predicate>> PredicateUtils::CreatePickedFieldFilter(
     const std::shared_ptr<Predicate>& predicate,
     const std::map<std::string, int32_t>& picked_field_name_to_idx) {

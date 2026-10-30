@@ -62,14 +62,6 @@ class BucketSelectConverter {
         const std::vector<std::shared_ptr<arrow::DataType>>& bucket_key_arrow_types,
         BucketFunctionType bucket_function_type, int32_t num_buckets, MemoryPool* pool);
 
- private:
-    /// Extract single literal per bucket key field from EQUAL predicates.
-    /// Splits the predicate by AND and looks for EQUAL leaf predicates on bucket key fields.
-    /// @return A map from field name to literal, or nullopt if not all bucket keys are constrained.
-    static std::optional<std::map<std::string, Literal>> ExtractEqualLiterals(
-        const std::shared_ptr<Predicate>& predicate,
-        const std::vector<std::string>& bucket_key_names);
-
     /// Write a Literal value to a BinaryRowWriter at the given position.
     static Status WriteLiteralToRow(int32_t pos, const Literal& literal, FieldType field_type,
                                     const std::shared_ptr<arrow::DataType>& arrow_type,
@@ -79,6 +71,14 @@ class BucketSelectConverter {
     static Result<std::unique_ptr<BucketFunction>> CreateBucketFunction(
         BucketFunctionType type, const std::vector<FieldType>& bucket_key_types,
         const std::vector<std::shared_ptr<arrow::DataType>>& bucket_key_arrow_types);
+
+ private:
+    /// Extract single literal per bucket key field from EQUAL predicates.
+    /// Splits the predicate by AND and looks for EQUAL leaf predicates on bucket key fields.
+    /// @return A map from field name to literal, or nullopt if not all bucket keys are constrained.
+    static std::optional<std::map<std::string, Literal>> ExtractEqualLiterals(
+        const std::shared_ptr<Predicate>& predicate,
+        const std::vector<std::string>& bucket_key_names);
 };
 
 }  // namespace paimon

@@ -48,6 +48,11 @@ Status ManifestEntryWriter::Write(const ManifestEntry& entry) {
     max_bucket_ = std::max(max_bucket_, entry.Bucket());
     min_level_ = std::min(min_level_, entry.Level());
     max_level_ = std::max(max_level_, entry.Level());
+    if (!total_buckets_) {
+        total_buckets_ = entry.TotalBuckets();
+    } else if (total_buckets_.value() != entry.TotalBuckets()) {
+        total_buckets_consistent_ = false;
+    }
 
     if (row_id_stats_) {
         std::optional<int64_t> first_row_id = entry.File()->first_row_id;
@@ -74,7 +79,10 @@ Result<ManifestFileMeta> ManifestEntryWriter::GetResult() {
         (row_id_stats_ == std::nullopt ? std::nullopt
                                        : std::optional<int64_t>(row_id_stats_.value().min_row_id)),
         (row_id_stats_ == std::nullopt ? std::nullopt
-                                       : std::optional<int64_t>(row_id_stats_.value().max_row_id)));
+                                       : std::optional<int64_t>(row_id_stats_.value().max_row_id)),
+        (total_buckets_consistent_ && total_buckets_ && total_buckets_.value() > 0
+             ? total_buckets_
+             : std::nullopt));
 }
 
 }  // namespace paimon

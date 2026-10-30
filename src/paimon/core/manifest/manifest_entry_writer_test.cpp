@@ -50,7 +50,8 @@ class WriterBuilder;
 namespace paimon::test {
 class ManifestEntryWriterTest : public ::testing::Test {
  public:
-    ManifestEntry CreateEntry(const std::optional<int64_t>& first_row_id, int64_t row_count) const {
+    ManifestEntry CreateEntry(const std::optional<int64_t>& first_row_id, int64_t row_count,
+                              int32_t total_buckets = -1) const {
         auto meta = std::make_shared<DataFileMeta>(
             "data-d7725088-6bd4-4e70-9ce6-714ae93b47cc-0.orc", /*file_size=*/863, row_count,
             /*min_key=*/BinaryRow::EmptyRow(),
@@ -66,7 +67,7 @@ class ManifestEntryWriterTest : public ::testing::Test {
             /*external_path=*/std::nullopt, first_row_id,
             /*write_cols=*/std::nullopt, /*column_max_sequence_numbers=*/std::nullopt);
         return {FileKind::Add(), BinaryRowGenerator::GenerateRow({10}, pool_.get()), /*bucket=*/0,
-                /*total_buckets=*/-1, meta};
+                total_buckets, meta};
     }
 
     std::unique_ptr<ManifestEntryWriter> CreateEntryWriter(
@@ -163,6 +164,26 @@ TEST_F(ManifestEntryWriterTest, TestSimple) {
     ASSERT_OK_AND_ASSIGN(ManifestFileMeta meta, writer->GetResult());
     auto partition_stats = meta.PartitionStats();
     ASSERT_EQ(partition_stats, BinaryRowGenerator::GenerateStats({10}, {20}, {0}, pool_.get()));
+    ASSERT_EQ(meta.TotalBuckets(), std::optional<int32_t>(2));
+}
+
+TEST_F(ManifestEntryWriterTest, TestTotalBucketsOnlyWhenShared) {
+    auto dir = UniqueTestDirectory::Create();
+    ASSERT_TRUE(dir);
+    auto write = [&](const std::string& name, const std::vector<int32_t>& totals) {
+        auto writer = CreateEntryWriter(dir->Str() + "/manifest/" + name);
+        for (int32_t total : totals) {
+            EXPECT_OK(writer->Write(CreateEntry(/*first_row_id=*/std::nullopt, 1, total)));
+        }
+        auto meta = writer->GetResult();
+        EXPECT_TRUE(meta.ok());
+        return meta.value().TotalBuckets();
+    };
+    ASSERT_EQ(write("same", {4, 4, 4}), std::optional<int32_t>(4));
+    ASSERT_EQ(write("mixed", {4, 2, 4}), std::nullopt);
+    ASSERT_EQ(write("unaware", {-1, -1}), std::nullopt);
+    ASSERT_EQ(write("postpone", {-2}), std::nullopt);
+    ASSERT_EQ(write("zero", {0}), std::nullopt);
 }
 
 TEST_F(ManifestEntryWriterTest, TestWithRowIds) {
@@ -190,5 +211,6 @@ TEST_F(ManifestEntryWriterTest, TestWithRowIds) {
     ASSERT_OK_AND_ASSIGN(ManifestFileMeta meta, writer->GetResult());
     ASSERT_FALSE(meta.MinRowId());
     ASSERT_FALSE(meta.MaxRowId());
+    ASSERT_FALSE(meta.TotalBuckets());
 }
 }  // namespace paimon::test

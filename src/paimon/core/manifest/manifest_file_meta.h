@@ -43,7 +43,8 @@ class PAIMON_EXPORT ManifestFileMeta {
                      const std::optional<int32_t>& min_level,
                      const std::optional<int32_t>& max_level,
                      const std::optional<int64_t>& min_row_id,
-                     const std::optional<int64_t>& max_row_id);
+                     const std::optional<int64_t>& max_row_id,
+                     const std::optional<int32_t>& total_buckets = std::nullopt);
 
     const std::string& FileName() const {
         return file_name_;
@@ -89,6 +90,12 @@ class PAIMON_EXPORT ManifestFileMeta {
         return max_row_id_;
     }
 
+    /// The total bucket number shared by every entry of the manifest, null when the entries
+    /// differ, are not in a real bucket, or the manifest was written before the field existed.
+    const std::optional<int32_t>& TotalBuckets() const {
+        return total_buckets_;
+    }
+
     std::string ToString() const;
 
     bool operator==(const ManifestFileMeta& other) const;
@@ -106,6 +113,7 @@ class PAIMON_EXPORT ManifestFileMeta {
     std::optional<int32_t> max_level_;
     std::optional<int64_t> min_row_id_;
     std::optional<int64_t> max_row_id_;
+    std::optional<int32_t> total_buckets_;
 };
 
 }  // namespace paimon

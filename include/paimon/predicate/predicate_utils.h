@@ -53,6 +53,9 @@ class PAIMON_EXPORT PredicateUtils {
     static std::vector<std::shared_ptr<Predicate>> SplitAnd(
         const std::shared_ptr<Predicate>& predicate);
 
+    static std::vector<std::shared_ptr<Predicate>> SplitOr(
+        const std::shared_ptr<Predicate>& predicate);
+
     // picked_field_name_to_idx: [field_name, idx in target schema]
     static Result<std::shared_ptr<Predicate>> CreatePickedFieldFilter(
         const std::shared_ptr<Predicate>& predicate,

@@ -44,8 +44,16 @@ TEST(ManifestFileMetaSerializerTest, TestToFromRow) {
                            /*min_bucket=*/std::nullopt, /*max_bucket=*/std::nullopt,
                            /*min_level=*/std::nullopt, /*max_level=*/std::nullopt,
                            /*min_row_id=*/200, /*max_row_id=*/233);
+    ManifestFileMeta meta3(/*file_name=*/"meta3", /*file_size=*/25, /*num_added_files=*/30,
+                           /*num_deleted_files=*/35, SimpleStats::EmptyStats(), /*schema_id=*/1,
+                           /*min_bucket=*/0, /*max_bucket=*/3, /*min_level=*/0, /*max_level=*/5,
+                           /*min_row_id=*/std::nullopt, /*max_row_id=*/std::nullopt,
+                           /*total_buckets=*/4);
+    ASSERT_EQ(meta1.TotalBuckets(), std::nullopt);
+    ASSERT_EQ(meta3.TotalBuckets(), std::optional<int32_t>(4));
+    ASSERT_FALSE(meta3 == meta2);
 
-    std::vector<ManifestFileMeta> metas = {meta1, meta2};
+    std::vector<ManifestFileMeta> metas = {meta1, meta2, meta3};
     ManifestFileMetaSerializer serializer(GetDefaultPool());
     for (const auto& meta : metas) {
         ASSERT_OK_AND_ASSIGN(auto row, serializer.ToRow(meta));
@@ -59,7 +67,7 @@ TEST(ManifestFileMetaSerializerTest, TestInvalidCase) {
     auto pool = GetDefaultPool();
 
     {
-        GenericRow row(12);
+        GenericRow row(13);
         row.SetField(0, BinaryString::FromString("meta1", pool.get()));
         row.SetField(1, 10L);
         row.SetField(2, 20L);
@@ -75,6 +83,7 @@ TEST(ManifestFileMetaSerializerTest, TestInvalidCase) {
         row.SetField(9, NullType());
         row.SetField(10, NullType());
         row.SetField(11, NullType());
+        row.SetField(12, NullType());
 
         ManifestFileMetaSerializer serializer(pool);
         ASSERT_NOK_WITH_MSG(serializer.ConvertFrom(/*version=*/1, row),
@@ -84,7 +93,7 @@ TEST(ManifestFileMetaSerializerTest, TestInvalidCase) {
         ASSERT_OK(serializer.ConvertFrom(/*version=*/2, row));
     }
     {
-        GenericRow row(12);
+        GenericRow row(13);
         row.SetField(0, BinaryString::FromString("meta1", pool.get()));
         row.SetField(1, 10L);
         row.SetField(2, 20L);
@@ -97,6 +106,7 @@ TEST(ManifestFileMetaSerializerTest, TestInvalidCase) {
         row.SetField(9, NullType());
         row.SetField(10, NullType());
         row.SetField(11, NullType());
+        row.SetField(12, NullType());
 
         ManifestFileMetaSerializer serializer(pool);
         ASSERT_NOK_WITH_MSG(serializer.ConvertFrom(/*version=*/2, row),

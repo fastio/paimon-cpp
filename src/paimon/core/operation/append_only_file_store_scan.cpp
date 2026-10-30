@@ -66,6 +66,7 @@ Result<std::unique_ptr<AppendOnlyFileStoreScan>> AppendOnlyFileStoreScan::Create
                                     table_schema, arrow_schema, core_options, executor, pool));
     PAIMON_RETURN_NOT_OK(
         scan->SplitAndSetFilter(table_schema->PartitionKeys(), arrow_schema, scan_filters));
+    PAIMON_RETURN_NOT_OK(scan->SetBucketSelector(scan_filters));
     return scan;
 }
 

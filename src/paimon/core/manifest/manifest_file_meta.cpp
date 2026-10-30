@@ -31,7 +31,8 @@ ManifestFileMeta::ManifestFileMeta(
     int64_t num_deleted_files, const SimpleStats& partition_stats, int64_t schema_id,
     const std::optional<int32_t>& min_bucket, const std::optional<int32_t>& max_bucket,
     const std::optional<int32_t>& min_level, const std::optional<int32_t>& max_level,
-    const std::optional<int64_t>& min_row_id, const std::optional<int64_t>& max_row_id)
+    const std::optional<int64_t>& min_row_id, const std::optional<int64_t>& max_row_id,
+    const std::optional<int32_t>& total_buckets)
     : file_name_(file_name),
       file_size_(file_size),
       num_added_files_(num_added_files),
@@ -43,7 +44,8 @@ ManifestFileMeta::ManifestFileMeta(
       min_level_(min_level),
       max_level_(max_level),
       min_row_id_(min_row_id),
-      max_row_id_(max_row_id) {}
+      max_row_id_(max_row_id),
+      total_buckets_(total_buckets) {}
 
 bool ManifestFileMeta::operator==(const ManifestFileMeta& other) const {
     if (this == &other) {
@@ -55,7 +57,8 @@ bool ManifestFileMeta::operator==(const ManifestFileMeta& other) const {
            partition_stats_ == other.partition_stats_ && schema_id_ == other.schema_id_ &&
            min_bucket_ == other.min_bucket_ && max_bucket_ == other.max_bucket_ &&
            min_level_ == other.min_level_ && max_level_ == other.max_level_ &&
-           min_row_id_ == other.min_row_id_ && max_row_id_ == other.max_row_id_;
+           min_row_id_ == other.min_row_id_ && max_row_id_ == other.max_row_id_ &&
+           total_buckets_ == other.total_buckets_;
 }
 
 const std::shared_ptr<arrow::DataType>& ManifestFileMeta::DataType() {
@@ -72,6 +75,7 @@ const std::shared_ptr<arrow::DataType>& ManifestFileMeta::DataType() {
         arrow::field("_MAX_LEVEL", arrow::int32(), /*nullable=*/true),
         arrow::field("_MIN_ROW_ID", arrow::int64(), /*nullable=*/true),
         arrow::field("_MAX_ROW_ID", arrow::int64(), /*nullable=*/true),
+        arrow::field("_TOTAL_BUCKETS", arrow::int32(), /*nullable=*/true),
     });
     return data_type;
 }
@@ -92,10 +96,14 @@ std::string ManifestFileMeta::ToString() const {
     std::string max_row_id_str =
         max_row_id_ != std::nullopt ? std::to_string(max_row_id_.value()) : "null";
 
-    return fmt::format("{{{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}", file_name_, file_size_,
-                       num_added_files_, num_deleted_files_, partition_stats_.ToString(),
-                       schema_id_, min_bucket_str, max_bucket_str, min_level_str, max_level_str,
-                       min_row_id_str, max_row_id_str);
+    std::string total_buckets_str =
+        total_buckets_ != std::nullopt ? std::to_string(total_buckets_.value()) : "null";
+
+    return fmt::format("{{{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}", file_name_,
+                       file_size_, num_added_files_, num_deleted_files_,
+                       partition_stats_.ToString(), schema_id_, min_bucket_str, max_bucket_str,
+                       min_level_str, max_level_str, min_row_id_str, max_row_id_str,
+                       total_buckets_str);
 }
 
 }  // namespace paimon

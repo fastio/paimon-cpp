@@ -2982,13 +2982,13 @@ TEST_F(ScanAndReadInteTest, TestAvroWithPkTable) {
 
 TEST_P(ScanAndReadInteTest, TestWithPKBucketSelectByPredicate) {
     auto file_format = FileFormat();
-    // Verify BucketSelectConverter: an EQUAL predicate on bucket key f2 should automatically
+    // Verify BucketSelector: an EQUAL predicate on bucket key f2 should automatically
     // derive the target bucket, without explicitly calling SetBucketFilter.
     // From the existing test  f2=0 maps to bucket 1, f2=1 maps to bucket 0.
     std::string table_path = paimon::test::GetDataDir() + file_format +
                              "/pk_table_scan_and_read_dv.db/pk_table_scan_and_read_dv/";
 
-    // Predicate: f2 = 0 (bucket key). This should cause BucketSelectConverter to derive bucket 1.
+    // Predicate: f2 = 0 (bucket key). The bucket selector keeps only bucket 1.
     auto predicate = PredicateBuilder::Equal(/*field_index=*/2, /*field_name=*/"f2", FieldType::INT,
                                              Literal(static_cast<int32_t>(0)));
 

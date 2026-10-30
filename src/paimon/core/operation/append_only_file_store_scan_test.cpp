@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -29,6 +30,9 @@
 #include "paimon/common/data/binary_row.h"
 #include "paimon/common/data/binary_row_writer.h"
 #include "paimon/common/io/cache/lru_cache.h"
+#include "paimon/core/bucket/default_bucket_function.h"
+#include "paimon/core/manifest/manifest_file_meta.h"
+#include "paimon/core/stats/simple_stats.h"
 #include "paimon/core/manifest/manifest_entry.h"
 #include "paimon/core/manifest/partition_entry.h"
 #include "paimon/core/schema/schema_manager.h"
@@ -46,6 +50,7 @@
 #include "paimon/status.h"
 #include "paimon/table/source/scan_metrics.h"
 #include "paimon/table/source/table_scan.h"
+#include "paimon/testing/utils/binary_row_generator.h"
 #include "paimon/testing/utils/testharness.h"
 #include "paimon/testing/utils/timezone_guard.h"
 namespace paimon::test {
@@ -141,6 +146,75 @@ TEST(AppendOnlyFileStoreScanTest, TestReadPartitionEntries) {
                      ComparePartitionEntryByPartition);
 
     ASSERT_EQ(result_partition_entries, expected_partition_entries);
+}
+
+TEST(AppendOnlyFileStoreScanTest, TestBucketSelector) {
+    std::string table_path = paimon::test::GetDataDir() + "/orc/append_09.db/append_09/";
+    auto pool = GetDefaultPool();
+    auto create_scan = [&](const std::shared_ptr<Predicate>& predicate) {
+        ScanContextBuilder context_builder(table_path);
+        context_builder.AddOption(Options::SCAN_SNAPSHOT_ID, "5");
+        if (predicate) {
+            context_builder.SetPredicate(predicate);
+        }
+        auto scan_context = context_builder.Finish();
+        EXPECT_TRUE(scan_context.ok());
+        auto table_scan = TableScan::Create(std::move(scan_context).value());
+        EXPECT_TRUE(table_scan.ok());
+        return std::shared_ptr<TableScan>(std::move(table_scan).value());
+    };
+    auto file_store_scan = [](const std::shared_ptr<TableScan>& table_scan) {
+        return dynamic_cast<AbstractTableScan*>(table_scan.get())->snapshot_reader_->scan_;
+    };
+
+    // the table has 'bucket' = '2' and 'bucket-key' = 'f2'
+    ASSERT_FALSE(file_store_scan(create_scan(nullptr))->bucket_selector_);
+    std::set<int32_t> selected_buckets;
+    for (int32_t value : {0, 1, 2, 3, 4, 5, 6, 7}) {
+        DefaultBucketFunction function;
+        int32_t bucket = function.Bucket(BinaryRowGenerator::GenerateRow({value}, pool.get()), 2);
+        auto table_scan = create_scan(
+            PredicateBuilder::Equal(/*field_index=*/2, "f2", FieldType::INT, Literal(value)));
+        auto scan = file_store_scan(table_scan);
+        ASSERT_TRUE(scan->bucket_selector_);
+        ASSERT_OK_AND_ASSIGN(auto plan, scan->CreatePlan());
+        std::vector<ManifestEntry> entries = plan->Files();
+        auto selector = scan->bucket_selector_;
+        scan->bucket_selector_ = nullptr;
+        ASSERT_OK_AND_ASSIGN(auto unselected_plan, scan->CreatePlan());
+        scan->bucket_selector_ = selector;
+        size_t expected = 0;
+        for (const auto& entry : unselected_plan->Files()) {
+            expected += entry.Bucket() == bucket ? 1 : 0;
+        }
+        ASSERT_EQ(entries.size(), expected);
+        for (const auto& entry : entries) {
+            ASSERT_EQ(entry.Bucket(), bucket);
+            selected_buckets.insert(bucket);
+        }
+
+        auto manifest = [](int32_t min_bucket, int32_t max_bucket,
+                           std::optional<int32_t> total_buckets) {
+            return ManifestFileMeta("manifest", /*file_size=*/1, /*num_added_files=*/1,
+                                    /*num_deleted_files=*/0, SimpleStats::EmptyStats(),
+                                    /*schema_id=*/0, min_bucket, max_bucket, /*min_level=*/0,
+                                    /*max_level=*/0, /*min_row_id=*/std::nullopt,
+                                    /*max_row_id=*/std::nullopt, total_buckets);
+        };
+        int32_t other = 1 - bucket;
+        ASSERT_OK_AND_ASSIGN(bool keep, scan->FilterManifestFileMeta(manifest(bucket, bucket, 2)));
+        ASSERT_TRUE(keep);
+        ASSERT_OK_AND_ASSIGN(keep, scan->FilterManifestFileMeta(manifest(0, 1, 2)));
+        ASSERT_TRUE(keep);
+        ASSERT_OK_AND_ASSIGN(keep, scan->FilterManifestFileMeta(manifest(other, other, 2)));
+        ASSERT_FALSE(keep);
+        // manifests written without the total bucket number are never skipped by it
+        ASSERT_OK_AND_ASSIGN(keep,
+                             scan->FilterManifestFileMeta(manifest(other, other, std::nullopt)));
+        ASSERT_TRUE(keep);
+    }
+    // files of both buckets were selected by some value
+    ASSERT_EQ(selected_buckets, (std::set<int32_t>{0, 1}));
 }
 
 TEST(AppendOnlyFileStoreScanTest, TestScanDurationMetric) {

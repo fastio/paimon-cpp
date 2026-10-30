@@ -213,6 +213,7 @@ set(PAIMON_CORE_SRCS
     core/append/append_only_writer.cpp
     core/append/bucketed_append_compact_manager.cpp
     core/bucket/bucket_select_converter.cpp
+    core/bucket/bucket_selector.cpp
     core/append/append_compact_task.cpp
     core/append/append_compact_coordinator.cpp
     core/bucket/hive_bucket_function.cpp
@@ -725,6 +726,7 @@ if(PAIMON_BUILD_TESTS)
                     core/append/append_compact_coordinator_test.cpp
                     core/append/bucketed_append_compact_manager_test.cpp
                     core/bucket/bucket_select_converter_test.cpp
+                    core/bucket/bucket_selector_test.cpp
                     core/bucket/default_bucket_function_test.cpp
                     core/bucket/hive_bucket_function_test.cpp
                     core/bucket/bucket_id_calculator_test.cpp

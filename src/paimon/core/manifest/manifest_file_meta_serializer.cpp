@@ -81,6 +81,13 @@ Result<BinaryRow> ManifestFileMetaSerializer::ToRow(const ManifestFileMeta& reco
     } else {
         writer.WriteLong(12, max_row_id.value());
     }
+
+    auto total_buckets = record.TotalBuckets();
+    if (!total_buckets) {
+        writer.SetNullAt(13);
+    } else {
+        writer.WriteInt(13, total_buckets.value());
+    }
     writer.Complete();
     return row;
 }
@@ -133,9 +140,13 @@ Result<ManifestFileMeta> ManifestFileMetaSerializer::ConvertFrom(int32_t version
     if (!row.IsNullAt(11)) {
         max_row_id = row.GetLong(11);
     }
+    std::optional<int32_t> total_buckets;
+    if (!row.IsNullAt(12)) {
+        total_buckets = row.GetInt(12);
+    }
     return ManifestFileMeta(file_name.ToString(), file_size, num_added_files, num_deleted_files,
                             partition_stats, schema_id, min_bucket, max_bucket, min_level,
-                            max_level, min_row_id, max_row_id);
+                            max_level, min_row_id, max_row_id, total_buckets);
 }
 
 }  // namespace paimon

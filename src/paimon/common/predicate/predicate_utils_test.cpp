@@ -55,6 +55,28 @@ TEST(PredicateUtilsTest, TestSplitAnd) {
     ASSERT_EQ(*res[4], *child3);
 }
 
+TEST(PredicateUtilsTest, TestSplitOr) {
+    auto f0 = PredicateBuilder::IsNull(/*field_index=*/0, /*field_name=*/"f0", FieldType::BIGINT);
+    auto f1 = PredicateBuilder::IsNull(/*field_index=*/1, /*field_name=*/"f1", FieldType::BIGINT);
+    auto f2 = PredicateBuilder::IsNull(/*field_index=*/2, /*field_name=*/"f2", FieldType::BIGINT);
+    auto f3 = PredicateBuilder::IsNull(/*field_index=*/3, /*field_name=*/"f3", FieldType::BIGINT);
+    ASSERT_OK_AND_ASSIGN(auto and_child, PredicateBuilder::And({f1, f2}));
+    ASSERT_OK_AND_ASSIGN(auto nested_or, PredicateBuilder::Or({f0, f3}));
+    ASSERT_OK_AND_ASSIGN(auto predicate, PredicateBuilder::Or({nested_or, and_child, f2}));
+
+    auto res = PredicateUtils::SplitOr(predicate);
+    ASSERT_EQ(res.size(), 4u);
+    ASSERT_EQ(*res[0], *f0);
+    ASSERT_EQ(*res[1], *f3);
+    ASSERT_EQ(*res[2], *and_child);
+    ASSERT_EQ(*res[3], *f2);
+
+    res = PredicateUtils::SplitOr(and_child);
+    ASSERT_EQ(res.size(), 1u);
+    ASSERT_EQ(*res[0], *and_child);
+    ASSERT_TRUE(PredicateUtils::SplitOr(nullptr).empty());
+}
+
 TEST(PredicateUtilsTest, TestContainAnyField) {
     ASSERT_OK_AND_ASSIGN(
         auto child1,

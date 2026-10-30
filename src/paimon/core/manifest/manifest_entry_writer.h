@@ -76,6 +76,9 @@ class ManifestEntryWriter : public SingleFileWriter<const ManifestEntry&, Manife
     int32_t min_level_ = std::numeric_limits<int32_t>::max();
     int32_t max_level_ = std::numeric_limits<int32_t>::min();
     std::optional<RowIdStats> row_id_stats_ = RowIdStats();
+    // written only when every entry has the same positive total bucket number, as Java does
+    std::optional<int32_t> total_buckets_;
+    bool total_buckets_consistent_ = true;
 };
 
 }  // namespace paimon
