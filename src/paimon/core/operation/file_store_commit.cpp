@@ -37,6 +37,7 @@
 #include "paimon/core/operation/key_value_file_store_scan.h"
 #include "paimon/core/schema/schema_manager.h"
 #include "paimon/core/schema/table_schema.h"
+#include "paimon/core/table/bucket_mode.h"
 #include "paimon/core/utils/field_mapping.h"
 #include "paimon/core/utils/file_store_path_factory.h"
 #include "paimon/core/utils/snapshot_manager.h"
@@ -171,7 +172,8 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
         std::shared_ptr<IndexManifestFile> index_manifest_file,
         IndexManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
                                   options.GetManifestCompression(), path_factory,
-                                  options.GetBucket(), ctx->GetMemoryPool(), options));
+                                  ResolveBucketMode(options.GetBucket(), schema),
+                                  ctx->GetMemoryPool(), options));
 
     auto expire_snapshots = std::make_shared<ExpireSnapshots>(
         snapshot_manager, path_factory, manifest_list, manifest_file, options.GetFileSystem(),

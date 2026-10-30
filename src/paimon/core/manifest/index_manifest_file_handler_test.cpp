@@ -49,7 +49,7 @@ class IndexManifestFileHandlerTest : public testing::Test {
         ASSERT_TRUE(dir_ != nullptr);
     }
 
-    Result<std::unique_ptr<IndexManifestFile>> CreateManifestFile(int32_t bucket_mode) const {
+    Result<std::unique_ptr<IndexManifestFile>> CreateManifestFile(BucketMode bucket_mode) const {
         PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileFormat> file_format,
                                FileFormatFactory::Get("orc", {}));
         auto schema = arrow::schema({arrow::field("f0", arrow::int32())});
@@ -101,7 +101,7 @@ class IndexManifestFileHandlerTest : public testing::Test {
 };
 
 TEST_F(IndexManifestFileHandlerTest, GlobalCombinerDeletesThenAddsByFileName) {
-    ASSERT_OK_AND_ASSIGN(auto index_manifest_file, CreateManifestFile(/*bucket_mode=*/4));
+    ASSERT_OK_AND_ASSIGN(auto index_manifest_file, CreateManifestFile(BucketMode::HASH_FIXED));
 
     auto partition = BinaryRow::EmptyRow();
     std::vector<IndexManifestEntry> previous_entries = {
@@ -110,7 +110,7 @@ TEST_F(IndexManifestFileHandlerTest, GlobalCombinerDeletesThenAddsByFileName) {
     ASSERT_OK_AND_ASSIGN(std::string previous_manifest,
                          IndexManifestFileHandler::Write(
                              /*previous_index_manifest=*/std::nullopt, previous_entries,
-                             /*bucket_mode=*/4, index_manifest_file.get()));
+                             BucketMode::HASH_FIXED, index_manifest_file.get()));
 
     std::vector<IndexManifestEntry> new_entries = {
         MakeEntry(FileKind::Delete(), partition, /*bucket=*/999, /*index_type=*/"BTREE", "global-0",
@@ -120,7 +120,7 @@ TEST_F(IndexManifestFileHandlerTest, GlobalCombinerDeletesThenAddsByFileName) {
     ASSERT_OK_AND_ASSIGN(
         std::string current_manifest,
         IndexManifestFileHandler::Write(previous_manifest, new_entries,
-                                        /*bucket_mode=*/4, index_manifest_file.get()));
+                                        BucketMode::HASH_FIXED, index_manifest_file.get()));
 
     std::vector<IndexManifestEntry> written_entries;
     ASSERT_OK(index_manifest_file->Read(current_manifest, /*filter=*/nullptr, &written_entries));
@@ -130,7 +130,7 @@ TEST_F(IndexManifestFileHandlerTest, GlobalCombinerDeletesThenAddsByFileName) {
 }
 
 TEST_F(IndexManifestFileHandlerTest, BucketedCombinerUsesPartitionBucketAndIndexType) {
-    ASSERT_OK_AND_ASSIGN(auto index_manifest_file, CreateManifestFile(/*bucket_mode=*/2));
+    ASSERT_OK_AND_ASSIGN(auto index_manifest_file, CreateManifestFile(BucketMode::HASH_FIXED));
 
     auto partition_10 = BinaryRowGenerator::GenerateRow({10}, pool_.get());
     std::vector<IndexManifestEntry> previous_entries = {
@@ -142,7 +142,7 @@ TEST_F(IndexManifestFileHandlerTest, BucketedCombinerUsesPartitionBucketAndIndex
     ASSERT_OK_AND_ASSIGN(std::string previous_manifest,
                          IndexManifestFileHandler::Write(
                              /*previous_index_manifest=*/std::nullopt, previous_entries,
-                             /*bucket_mode=*/2, index_manifest_file.get()));
+                             BucketMode::HASH_FIXED, index_manifest_file.get()));
 
     std::vector<IndexManifestEntry> new_entries = {
         MakeEntry(FileKind::Delete(), partition_10, /*bucket=*/0,
@@ -153,7 +153,7 @@ TEST_F(IndexManifestFileHandlerTest, BucketedCombinerUsesPartitionBucketAndIndex
     ASSERT_OK_AND_ASSIGN(
         std::string current_manifest,
         IndexManifestFileHandler::Write(previous_manifest, new_entries,
-                                        /*bucket_mode=*/2, index_manifest_file.get()));
+                                        BucketMode::HASH_FIXED, index_manifest_file.get()));
 
     std::vector<IndexManifestEntry> written_entries;
     ASSERT_OK(index_manifest_file->Read(current_manifest, /*filter=*/nullptr, &written_entries));
@@ -177,7 +177,7 @@ TEST_F(IndexManifestFileHandlerTest, BucketedCombinerUsesPartitionBucketAndIndex
 }
 
 TEST_F(IndexManifestFileHandlerTest, BucketedCombinerOverwritesDuplicateAddedEntries) {
-    ASSERT_OK_AND_ASSIGN(auto index_manifest_file, CreateManifestFile(/*bucket_mode=*/2));
+    ASSERT_OK_AND_ASSIGN(auto index_manifest_file, CreateManifestFile(BucketMode::HASH_FIXED));
 
     auto partition = BinaryRowGenerator::GenerateRow({10}, pool_.get());
     std::vector<IndexManifestEntry> new_entries = {
@@ -189,7 +189,7 @@ TEST_F(IndexManifestFileHandlerTest, BucketedCombinerOverwritesDuplicateAddedEnt
     ASSERT_OK_AND_ASSIGN(std::string current_manifest,
                          IndexManifestFileHandler::Write(
                              /*previous_index_manifest=*/std::nullopt, new_entries,
-                             /*bucket_mode=*/2, index_manifest_file.get()));
+                             BucketMode::HASH_FIXED, index_manifest_file.get()));
 
     std::vector<IndexManifestEntry> written_entries;
     ASSERT_OK(index_manifest_file->Read(current_manifest, /*filter=*/nullptr, &written_entries));
@@ -199,7 +199,7 @@ TEST_F(IndexManifestFileHandlerTest, BucketedCombinerOverwritesDuplicateAddedEnt
 }
 
 TEST_F(IndexManifestFileHandlerTest, GlobalCombinerOverwritesDuplicateAddedEntries) {
-    ASSERT_OK_AND_ASSIGN(auto index_manifest_file, CreateManifestFile(/*bucket_mode=*/4));
+    ASSERT_OK_AND_ASSIGN(auto index_manifest_file, CreateManifestFile(BucketMode::HASH_FIXED));
 
     auto partition = BinaryRow::EmptyRow();
     std::vector<IndexManifestEntry> new_entries = {
@@ -210,7 +210,7 @@ TEST_F(IndexManifestFileHandlerTest, GlobalCombinerOverwritesDuplicateAddedEntri
     ASSERT_OK_AND_ASSIGN(std::string current_manifest,
                          IndexManifestFileHandler::Write(
                              /*previous_index_manifest=*/std::nullopt, new_entries,
-                             /*bucket_mode=*/4, index_manifest_file.get()));
+                             BucketMode::HASH_FIXED, index_manifest_file.get()));
 
     std::vector<IndexManifestEntry> written_entries;
     ASSERT_OK(index_manifest_file->Read(current_manifest, /*filter=*/nullptr, &written_entries));
@@ -220,7 +220,7 @@ TEST_F(IndexManifestFileHandlerTest, GlobalCombinerOverwritesDuplicateAddedEntri
 }
 
 TEST_F(IndexManifestFileHandlerTest, GlobalDvCombinerReplacesIndexFileInBucketUnawareMode) {
-    ASSERT_OK_AND_ASSIGN(auto index_manifest_file, CreateManifestFile(/*bucket_mode=*/-1));
+    ASSERT_OK_AND_ASSIGN(auto index_manifest_file, CreateManifestFile(BucketMode::BUCKET_UNAWARE));
 
     auto partition = BinaryRow::EmptyRow();
     // an unaware bucket table writes every index file under bucket 0, so only the index file
@@ -232,7 +232,7 @@ TEST_F(IndexManifestFileHandlerTest, GlobalDvCombinerReplacesIndexFileInBucketUn
     ASSERT_OK_AND_ASSIGN(std::string previous_manifest,
                          IndexManifestFileHandler::Write(
                              /*previous_index_manifest=*/std::nullopt, previous_entries,
-                             /*bucket_mode=*/-1, index_manifest_file.get()));
+                             BucketMode::BUCKET_UNAWARE, index_manifest_file.get()));
 
     // updating the vector of data-0.orc replaces its index file, and the data file it covers
     // moves to the new one
@@ -243,7 +243,7 @@ TEST_F(IndexManifestFileHandlerTest, GlobalDvCombinerReplacesIndexFileInBucketUn
     ASSERT_OK_AND_ASSIGN(
         std::string current_manifest,
         IndexManifestFileHandler::Write(previous_manifest, new_entries,
-                                        /*bucket_mode=*/-1, index_manifest_file.get()));
+                                        BucketMode::BUCKET_UNAWARE, index_manifest_file.get()));
 
     std::vector<IndexManifestEntry> written_entries;
     ASSERT_OK(index_manifest_file->Read(current_manifest, /*filter=*/nullptr, &written_entries));
@@ -264,7 +264,7 @@ TEST_F(IndexManifestFileHandlerTest, GlobalDvCombinerReplacesIndexFileInBucketUn
     ASSERT_OK_AND_ASSIGN(
         std::string reordered_manifest,
         IndexManifestFileHandler::Write(current_manifest, reordered_entries,
-                                        /*bucket_mode=*/-1, index_manifest_file.get()));
+                                        BucketMode::BUCKET_UNAWARE, index_manifest_file.get()));
 
     written_entries.clear();
     ASSERT_OK(index_manifest_file->Read(reordered_manifest, /*filter=*/nullptr, &written_entries));
@@ -276,8 +276,43 @@ TEST_F(IndexManifestFileHandlerTest, GlobalDvCombinerReplacesIndexFileInBucketUn
     ASSERT_EQ(written_file_names, (std::set<std::string>{"dv-0-newer", "dv-1"}));
 }
 
+TEST_F(IndexManifestFileHandlerTest, DynamicBucketDvUsesBucketedCombiner) {
+    ASSERT_OK_AND_ASSIGN(auto index_manifest_file, CreateManifestFile(BucketMode::HASH_DYNAMIC));
+
+    auto partition = BinaryRow::EmptyRow();
+    std::vector<IndexManifestEntry> previous_entries = {
+        MakeDvEntry(FileKind::Add(), partition, /*bucket=*/0, "dv-0", {"data-0.orc"}, 1),
+        MakeDvEntry(FileKind::Add(), partition, /*bucket=*/1, "dv-1", {"data-1.orc"}, 1)};
+    ASSERT_OK_AND_ASSIGN(std::string previous_manifest,
+                         IndexManifestFileHandler::Write(
+                             /*previous_index_manifest=*/std::nullopt, previous_entries,
+                             BucketMode::HASH_DYNAMIC, index_manifest_file.get()));
+
+    // a dynamic bucket table rewrites the whole index file of a bucket, so the added entry
+    // replaces dv-0 by (partition, bucket) although it is not deleted by name
+    std::vector<IndexManifestEntry> new_entries = {MakeDvEntry(
+        FileKind::Add(), partition, /*bucket=*/0, "dv-0-new", {"data-0.orc", "data-2.orc"}, 2)};
+    ASSERT_OK_AND_ASSIGN(
+        std::string current_manifest,
+        IndexManifestFileHandler::Write(previous_manifest, new_entries, BucketMode::HASH_DYNAMIC,
+                                        index_manifest_file.get()));
+
+    std::vector<IndexManifestEntry> written_entries;
+    ASSERT_OK(index_manifest_file->Read(current_manifest, /*filter=*/nullptr, &written_entries));
+    std::set<std::string> written_file_names;
+    for (const auto& entry : written_entries) {
+        written_file_names.insert(entry.index_file->FileName());
+    }
+    ASSERT_EQ(written_file_names, (std::set<std::string>{"dv-0-new", "dv-1"}));
+
+    // the same delta in bucket unaware mode covers data-0.orc twice
+    ASSERT_NOK(IndexManifestFileHandler::Write(previous_manifest, new_entries,
+                                               BucketMode::BUCKET_UNAWARE,
+                                               index_manifest_file.get()));
+}
+
 TEST_F(IndexManifestFileHandlerTest, GlobalDvCombinerRejectsInconsistentDelta) {
-    ASSERT_OK_AND_ASSIGN(auto index_manifest_file, CreateManifestFile(/*bucket_mode=*/-1));
+    ASSERT_OK_AND_ASSIGN(auto index_manifest_file, CreateManifestFile(BucketMode::BUCKET_UNAWARE));
 
     auto partition = BinaryRow::EmptyRow();
     std::vector<IndexManifestEntry> previous_entries = {
@@ -286,7 +321,7 @@ TEST_F(IndexManifestFileHandlerTest, GlobalDvCombinerRejectsInconsistentDelta) {
     ASSERT_OK_AND_ASSIGN(std::string previous_manifest,
                          IndexManifestFileHandler::Write(
                              /*previous_index_manifest=*/std::nullopt, previous_entries,
-                             /*bucket_mode=*/-1, index_manifest_file.get()));
+                             BucketMode::BUCKET_UNAWARE, index_manifest_file.get()));
 
     // every delta below was built against a base the previous manifest is not, so applying it
     // would leave the read either with two vectors for one data file or with none
@@ -297,7 +332,7 @@ TEST_F(IndexManifestFileHandlerTest, GlobalDvCombinerRejectsInconsistentDelta) {
 
         ASSERT_NOK_WITH_MSG(
             IndexManifestFileHandler::Write(previous_manifest, new_entries,
-                                            /*bucket_mode=*/-1, index_manifest_file.get()),
+                                            BucketMode::BUCKET_UNAWARE, index_manifest_file.get()),
             "Trying to add a second deletion vector for data file data-0.orc");
     }
     {
@@ -307,7 +342,7 @@ TEST_F(IndexManifestFileHandlerTest, GlobalDvCombinerRejectsInconsistentDelta) {
 
         ASSERT_NOK_WITH_MSG(
             IndexManifestFileHandler::Write(previous_manifest, new_entries,
-                                            /*bucket_mode=*/-1, index_manifest_file.get()),
+                                            BucketMode::BUCKET_UNAWARE, index_manifest_file.get()),
             "Trying to add deletion vector index file dv-0 which is already added.");
     }
     {
@@ -317,7 +352,7 @@ TEST_F(IndexManifestFileHandlerTest, GlobalDvCombinerRejectsInconsistentDelta) {
 
         ASSERT_NOK_WITH_MSG(
             IndexManifestFileHandler::Write(previous_manifest, new_entries,
-                                            /*bucket_mode=*/-1, index_manifest_file.get()),
+                                            BucketMode::BUCKET_UNAWARE, index_manifest_file.get()),
             "Trying to delete deletion vector index file dv-1 which does not exist.");
     }
     {
@@ -329,7 +364,7 @@ TEST_F(IndexManifestFileHandlerTest, GlobalDvCombinerRejectsInconsistentDelta) {
 
         ASSERT_NOK_WITH_MSG(
             IndexManifestFileHandler::Write(previous_manifest, new_entries,
-                                            /*bucket_mode=*/-1, index_manifest_file.get()),
+                                            BucketMode::BUCKET_UNAWARE, index_manifest_file.get()),
             "Trying to delete the deletion vector of data file data-1.orc, which does not exist.");
     }
 }

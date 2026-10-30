@@ -46,7 +46,7 @@ class MemoryPool;
 Result<std::unique_ptr<IndexManifestFile>> IndexManifestFile::Create(
     const std::shared_ptr<FileSystem>& file_system, const std::shared_ptr<FileFormat>& file_format,
     const std::string& compression, const std::shared_ptr<FileStorePathFactory>& path_factory,
-    int32_t bucket_mode, const std::shared_ptr<MemoryPool>& pool, const CoreOptions& options) {
+    BucketMode bucket_mode, const std::shared_ptr<MemoryPool>& pool, const CoreOptions& options) {
     std::shared_ptr<arrow::DataType> data_type =
         VersionedObjectSerializer<IndexManifestEntry>::VersionType(IndexManifestEntry::DataType());
 
@@ -71,7 +71,7 @@ IndexManifestFile::IndexManifestFile(const std::shared_ptr<FileSystem>& file_sys
                                      const std::shared_ptr<WriterBuilder>& writer_builder,
                                      const std::string& compression,
                                      const std::shared_ptr<PathFactory>& path_factory,
-                                     int32_t bucket_mode, const std::shared_ptr<Cache>& cache,
+                                     BucketMode bucket_mode, const std::shared_ptr<Cache>& cache,
                                      const std::shared_ptr<MemoryPool>& pool)
     : ObjectsFile<IndexManifestEntry>(file_system, reader_builder, writer_builder,
                                       std::make_unique<IndexManifestEntrySerializer>(pool),
