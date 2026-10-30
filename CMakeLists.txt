@@ -576,3 +576,8 @@ endif()
 install(EXPORT PaimonTargets
         NAMESPACE Paimon::
         DESTINATION ${PAIMON_CMAKE_INSTALL_DIR})
+install(DIRECTORY ${ARROW_INCLUDE_DIR}/
+        DESTINATION "include"
+        FILES_MATCHING
+        PATTERN "*.h"
+        PATTERN "*.hpp")
