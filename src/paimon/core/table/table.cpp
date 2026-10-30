@@ -419,7 +419,8 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
                 std::unique_ptr<IndexManifestFile> index_manifest_file,
                 IndexManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
                                           options.GetManifestCompression(), file_store_path_factory,
-                                          options.GetBucket(), ctx->GetMemoryPool(), options));
+                                          ResolveBucketMode(options.GetBucket(), schema),
+                                          ctx->GetMemoryPool(), options));
             auto index_file_handler = std::make_shared<IndexFileHandler>(
                 options.GetFileSystem(), std::move(index_manifest_file),
                 std::make_shared<IndexFilePathFactories>(file_store_path_factory),
@@ -520,7 +521,8 @@ Result<std::unique_ptr<FileStoreWrite>> FileStoreWrite::Create(std::unique_ptr<W
                 std::unique_ptr<IndexManifestFile> index_manifest_file,
                 IndexManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
                                           options.GetManifestCompression(), file_store_path_factory,
-                                          options.GetBucket(), ctx->GetMemoryPool(), options));
+                                          ResolveBucketMode(options.GetBucket(), schema),
+                                          ctx->GetMemoryPool(), options));
             index_file_handler = std::make_shared<IndexFileHandler>(
                 options.GetFileSystem(), std::move(index_manifest_file),
                 std::make_shared<IndexFilePathFactories>(file_store_path_factory),
@@ -660,13 +662,15 @@ class TableScanImpl {
     }
 
     static Result<std::unique_ptr<IndexFileHandler>> CreateIndexFileHandler(
-        const CoreOptions& core_options, const std::shared_ptr<FileStorePathFactory>& path_factory,
+        const std::shared_ptr<TableSchema>& table_schema, const CoreOptions& core_options,
+        const std::shared_ptr<FileStorePathFactory>& path_factory,
         const std::shared_ptr<MemoryPool>& memory_pool) {
         PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<IndexManifestFile> index_manifest_file,
                                IndexManifestFile::Create(
                                    core_options.GetFileSystem(), core_options.GetManifestFormat(),
                                    core_options.GetManifestCompression(), path_factory,
-                                   core_options.GetBucket(), memory_pool, core_options));
+                                   ResolveBucketMode(core_options.GetBucket(), table_schema),
+                                   memory_pool, core_options));
         return std::make_unique<IndexFileHandler>(
             core_options.GetFileSystem(), std::move(index_manifest_file),
             std::make_shared<IndexFilePathFactories>(path_factory),
@@ -863,9 +867,12 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(
         ValidateRealtimeScan(*table_schema, core_options, *context, read_optimized));
     // validate options
     if (core_options.GetBucket() == -1) {
-        if (!table_schema->PrimaryKeys().empty()) {
-            return Status::NotImplemented(fmt::format(
-                "do not support pk table bucket={} in scan process", core_options.GetBucket()));
+        // Batch planning of dynamic bucket primary key tables only depends on the buckets
+        // recorded in the manifest, and deletion vectors are looked up per (partition, bucket).
+        if (!table_schema->PrimaryKeys().empty() && context->IsStreamingMode()) {
+            return Status::NotImplemented(
+                fmt::format("do not support pk table bucket={} in streaming scan process",
+                            core_options.GetBucket()));
         }
     } else if (core_options.GetBucket() < 1 &&
                !SchemaValidation::IsPostponeBucketTable(*table_schema, core_options.GetBucket())) {
@@ -902,8 +909,8 @@ Result<std::unique_ptr<TableScan>> NewDataTableScan(
         std::unique_ptr<SplitGenerator> split_generator,
         TableScanImpl::CreateSplitGenerator(table_schema, core_options, context.get()));
     PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<IndexFileHandler> index_file_handler,
-                           TableScanImpl::CreateIndexFileHandler(core_options, path_factory,
-                                                                 context->GetMemoryPool()));
+                           TableScanImpl::CreateIndexFileHandler(
+                               table_schema, core_options, path_factory, context->GetMemoryPool()));
     auto snapshot_reader = std::make_shared<SnapshotReader>(
         file_store_scan, path_factory, std::move(split_generator), std::move(index_file_handler));
     const bool pk_table = !table_schema->PrimaryKeys().empty();
@@ -1409,7 +1416,8 @@ Result<std::unique_ptr<FileStoreCommit>> FileStoreCommit::Create(
         std::shared_ptr<IndexManifestFile> index_manifest_file,
         IndexManifestFile::Create(options.GetFileSystem(), options.GetManifestFormat(),
                                   options.GetManifestCompression(), path_factory,
-                                  options.GetBucket(), ctx->GetMemoryPool(), options));
+                                  ResolveBucketMode(options.GetBucket(), schema),
+                                  ctx->GetMemoryPool(), options));
 
     auto expire_snapshots = std::make_shared<ExpireSnapshots>(
         snapshot_manager, path_factory, manifest_list, manifest_file, index_manifest_file,
