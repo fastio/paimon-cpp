@@ -188,6 +188,7 @@ set(PAIMON_COMMON_SRCS
     common/utils/sensitive_config_utils.cpp
     common/utils/status.cpp
     common/utils/string_utils.cpp
+    common/utils/java_string_utils.cpp
     common/utils/url_utils.cpp)
 
 # The shared HTTP client is used by both the object store file systems and the
@@ -671,6 +672,7 @@ if(PAIMON_BUILD_TESTS)
                     common/utils/status_test.cpp
                     common/utils/stream_utils_test.cpp
                     common/utils/string_utils_test.cpp
+                    common/utils/java_string_utils_test.cpp
                     common/utils/url_utils_test.cpp
                     ${PAIMON_COMMON_HTTP_CLIENT_TEST_SRCS}
                     common/utils/range_test.cpp

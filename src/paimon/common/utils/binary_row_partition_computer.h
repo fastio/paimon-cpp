@@ -39,11 +39,16 @@ class MemoryPool;
 struct PartitionConverter {
     PartitionConverter(const std::string& _partition_key,
                        typename DataConverterUtils::StrToBinaryRowConverter&& _converter,
-                       typename DataConverterUtils::BinaryRowFieldToStrConverter&& _reconverter)
-        : partition_key(_partition_key), converter(_converter), reconverter(_reconverter) {}
+                       typename DataConverterUtils::BinaryRowFieldToStrConverter&& _reconverter,
+                       typename DataConverterUtils::NullFieldWriter&& _null_writer)
+        : partition_key(_partition_key),
+          converter(_converter),
+          reconverter(_reconverter),
+          null_writer(_null_writer) {}
     std::string partition_key;
     typename DataConverterUtils::StrToBinaryRowConverter converter;
     typename DataConverterUtils::BinaryRowFieldToStrConverter reconverter;
+    typename DataConverterUtils::NullFieldWriter null_writer;
 };
 
 /// PartitionComputer for `BinaryRow`.

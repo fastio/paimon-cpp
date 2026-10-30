@@ -35,6 +35,7 @@
 #include "paimon/common/utils/arrow/mem_utils.h"
 #include "paimon/common/utils/arrow/status_utils.h"
 #include "paimon/common/utils/checked_cast.h"
+#include "paimon/common/utils/date_time_utils.h"
 #include "paimon/core/casting/cast_executor.h"
 #include "paimon/core/casting/casting_utils.h"
 #include "paimon/core/utils/field_mapping.h"
@@ -378,6 +379,35 @@ Result<std::shared_ptr<arrow::Array>> FieldMappingReader::GenerateSinglePartitio
         case arrow::Type::type::DATE32: {
             int32_t value = partition_.GetDate(partition_info_.value().idx_in_partition[idx]);
             scalar = std::make_shared<arrow::Date32Scalar>(value);
+            break;
+        }
+        case arrow::Type::type::FLOAT: {
+            float value = partition_.GetFloat(partition_info_.value().idx_in_partition[idx]);
+            scalar = std::make_shared<arrow::FloatScalar>(value);
+            break;
+        }
+        case arrow::Type::type::DOUBLE: {
+            double value = partition_.GetDouble(partition_info_.value().idx_in_partition[idx]);
+            scalar = std::make_shared<arrow::DoubleScalar>(value);
+            break;
+        }
+        case arrow::Type::type::TIMESTAMP: {
+            auto timestamp_type = std::static_pointer_cast<arrow::TimestampType>(type);
+            Timestamp value =
+                partition_.GetTimestamp(partition_info_.value().idx_in_partition[idx],
+                                        DateTimeUtils::GetPrecisionFromType(timestamp_type));
+            scalar = std::make_shared<arrow::TimestampScalar>(
+                DateTimeUtils::TimestampToInteger(
+                    value, DateTimeUtils::GetTimeTypeFromArrowType(timestamp_type)),
+                type);
+            break;
+        }
+        case arrow::Type::type::DECIMAL128: {
+            auto decimal_type = std::static_pointer_cast<arrow::Decimal128Type>(type);
+            Decimal value = partition_.GetDecimal(partition_info_.value().idx_in_partition[idx],
+                                                  decimal_type->precision(), decimal_type->scale());
+            scalar = std::make_shared<arrow::Decimal128Scalar>(
+                arrow::Decimal128(static_cast<int64_t>(value.HighBits()), value.LowBits()), type);
             break;
         }
         default:

@@ -60,16 +60,21 @@ Result<std::unique_ptr<BinaryRowPartitionComputer>> BinaryRowPartitionComputer::
     }
     std::vector<PartitionConverter> partition_converters;
     for (const auto& partition_key : partition_keys) {
-        PAIMON_ASSIGN_OR_RAISE(arrow::Type::type type_id,
-                               GetTypeFromArrowSchema(schema, partition_key));
+        auto field = schema->GetFieldByName(partition_key);
+        if (field == nullptr) {
+            return Status::Invalid(
+                fmt::format("field {} not in schema {}", partition_key, schema->ToString()));
+        }
+        const auto& type = field->type();
         PAIMON_ASSIGN_OR_RAISE(
             DataConverterUtils::StrToBinaryRowConverter converter,
-            DataConverterUtils::CreateDataToBinaryRowConverter(type_id, memory_pool.get()));
+            DataConverterUtils::CreateDataToBinaryRowConverter(type, memory_pool.get()));
         PAIMON_ASSIGN_OR_RAISE(DataConverterUtils::BinaryRowFieldToStrConverter reconverter,
                                DataConverterUtils::CreateBinaryRowFieldToStringConverter(
-                                   type_id, legacy_partition_name_enabled));
+                                   type, legacy_partition_name_enabled));
         partition_converters.emplace_back(partition_key, std::move(converter),
-                                          std::move(reconverter));
+                                          std::move(reconverter),
+                                          DataConverterUtils::CreateNullFieldWriter(type));
     }
     return std::unique_ptr<BinaryRowPartitionComputer>(new BinaryRowPartitionComputer(
         partition_keys, schema, default_part_value, partition_converters, memory_pool));
@@ -92,7 +97,7 @@ Result<BinaryRow> BinaryRowPartitionComputer::ConvertToBinaryRow(
         auto input_iter = partition.find(partition_converter.partition_key);
         if (input_iter == partition.end()) {
             if (included_fields != nullptr) {
-                writer.SetNullAt(field_idx);
+                partition_converter.null_writer(field_idx, &writer);
                 continue;
             }
             return Status::Invalid(
@@ -103,9 +108,7 @@ Result<BinaryRow> BinaryRowPartitionComputer::ConvertToBinaryRow(
             (*included_fields)[field_idx] = true;
         }
         if (input_iter->second == default_part_value_) {
-            // TODO(yonghao.fyh): when support decimal/ timestamp in partition, use
-            // WriteTimestamp(null) for non compact precision
-            writer.SetNullAt(field_idx);
+            partition_converter.null_writer(field_idx, &writer);
         } else {
             PAIMON_RETURN_NOT_OK(
                 partition_converter.converter(input_iter->second, field_idx, &writer));
@@ -182,7 +185,7 @@ Result<std::string> BinaryRowPartitionComputer::PartToSimpleString(
     for (const auto& field : partition_type->fields()) {
         PAIMON_ASSIGN_OR_RAISE(DataConverterUtils::BinaryRowFieldToStrConverter converter,
                                DataConverterUtils::CreateBinaryRowFieldToStringConverter(
-                                   field->type()->id(), legacy_partition_name_enabled));
+                                   field->type(), legacy_partition_name_enabled));
         partition_converters.emplace_back(converter);
     }
     std::vector<std::string> partition_vec;

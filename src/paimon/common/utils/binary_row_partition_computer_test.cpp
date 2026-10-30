@@ -338,4 +338,44 @@ TEST(BinaryRowPartitionComputerTest, TestPartToSimpleString) {
         ASSERT_EQ(ret, "20240");
     }
 }
+
+// Partition paths Paimon 1.3.2 (Spark) wrote for TIMESTAMP, FLOAT, DOUBLE and DECIMAL(38, 10),
+// unescaped.
+TEST(BinaryRowPartitionComputerTest, TestJavaWrittenParameterizedPartitions) {
+    auto pool = GetDefaultPool();
+    auto schema = arrow::schema({arrow::field("id", arrow::int32()),
+                                 arrow::field("ts", arrow::timestamp(arrow::TimeUnit::MICRO)),
+                                 arrow::field("f", arrow::float32()),
+                                 arrow::field("d", arrow::float64()),
+                                 arrow::field("dec", arrow::decimal128(38, 10))});
+    std::vector<std::string> partition_keys = {"ts", "f", "d", "dec"};
+    ASSERT_OK_AND_ASSIGN(
+        std::unique_ptr<BinaryRowPartitionComputer> computer,
+        BinaryRowPartitionComputer::Create(partition_keys, schema, "__DEFAULT_PARTITION__",
+                                           /*legacy_partition_name_enabled=*/true, pool));
+    std::vector<std::map<std::string, std::string>> partitions = {
+        {{"ts", "1969-12-31T23:59:59.500"},
+         {"f", "1.25E-5"},
+         {"d", "NaN"},
+         {"dec", "-12345678901234567890.5000000000"}},
+        {{"ts", "2024-01-01T00:00:00.123456"},
+         {"f", "1.0E10"},
+         {"d", "0.0"},
+         {"dec", "0.0000000001"}},
+        {{"ts", "2024-06-30T08:00:05"}, {"f", "0.1"}, {"d", "1.0E7"}, {"dec", "1.5000000000"}},
+        {{"ts", "__DEFAULT_PARTITION__"},
+         {"f", "Infinity"},
+         {"d", "1.0E-4"},
+         {"dec", "__DEFAULT_PARTITION__"}},
+    };
+    for (const auto& partition : partitions) {
+        ASSERT_OK_AND_ASSIGN(BinaryRow row, computer->ToBinaryRow(partition));
+        ASSERT_OK_AND_ASSIGN(auto part_values, computer->GeneratePartitionVector(row));
+        std::map<std::string, std::string> actual(part_values.begin(), part_values.end());
+        ASSERT_EQ(partition, actual);
+    }
+    ASSERT_OK_AND_ASSIGN(BinaryRow row, computer->ToBinaryRow(partitions[3]));
+    ASSERT_TRUE(row.IsNullAt(0));
+    ASSERT_TRUE(row.IsNullAt(3));
+}
 }  // namespace paimon::test

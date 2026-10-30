@@ -24,6 +24,7 @@
 #include <memory>
 #include <vector>
 
+#include "arrow/type.h"
 #include "arrow/type_fwd.h"
 #include "gtest/gtest.h"
 #include "paimon/memory/memory_pool.h"
@@ -145,6 +146,80 @@ TEST(DataConverterUtilsTest, TestDataToBinaryRowConverterWithNoLegacyPartitionNa
         ASSERT_OK_AND_ASSIGN(auto partition_field_str, reconverters[idx](row, idx));
         ASSERT_EQ(data[idx].first, partition_field_str);
     }
+}
+
+// Partition directory names Java writes for TIMESTAMP, DECIMAL, FLOAT and DOUBLE.
+TEST(DataConverterUtilsTest, TestParameterizedPartitionTypes) {
+    auto pool = GetDefaultPool();
+    struct Case {
+        std::string legacy_str;
+        std::string str;
+        std::shared_ptr<arrow::DataType> type;
+    };
+    std::vector<Case> data = {
+        {"2024-01-01T00:00", "2024-01-01 00:00:00.000", arrow::timestamp(arrow::TimeUnit::MILLI)},
+        {"2024-01-01T12:30:00.123456", "2024-01-01 12:30:00.123456",
+         arrow::timestamp(arrow::TimeUnit::MICRO)},
+        {"1969-12-31T23:59:59", "1969-12-31 23:59:59", arrow::timestamp(arrow::TimeUnit::SECOND)},
+        {"2024-01-02T00:00:00.000000001", "2024-01-02 00:00:00.000000001",
+         arrow::timestamp(arrow::TimeUnit::NANO)},
+        {"1.50", "1.50", arrow::decimal128(10, 2)},
+        {"-3.00", "-3.00", arrow::decimal128(10, 2)},
+        {"12345678901234567890.123", "12345678901234567890.123", arrow::decimal128(38, 3)},
+        {"1.5", "1.5", arrow::float32()},
+        {"-0.0", "-0.0", arrow::float32()},
+        {"1.0E10", "1.0E10", arrow::float32()},
+        {"0.25", "0.25", arrow::float64()},
+        {"NaN", "NaN", arrow::float64()},
+        {"abc", "abc", arrow::utf8()},
+    };
+    for (bool legacy : {true, false}) {
+        BinaryRow row(data.size());
+        BinaryRowWriter writer(&row, 0, pool.get());
+        for (size_t idx = 0; idx < data.size(); idx++) {
+            const auto& value = legacy ? data[idx].legacy_str : data[idx].str;
+            ASSERT_OK_AND_ASSIGN(auto converter, DataConverterUtils::CreateDataToBinaryRowConverter(
+                                                     data[idx].type, pool.get()));
+            ASSERT_OK(converter(value, idx, &writer)) << value;
+        }
+        writer.Complete();
+        for (size_t idx = 0; idx < data.size(); idx++) {
+            ASSERT_OK_AND_ASSIGN(auto reconverter,
+                                 DataConverterUtils::CreateBinaryRowFieldToStringConverter(
+                                     data[idx].type, legacy));
+            ASSERT_OK_AND_ASSIGN(auto str, reconverter(row, idx));
+            ASSERT_EQ(legacy ? data[idx].legacy_str : data[idx].str, str);
+        }
+    }
+    ASSERT_NOK(DataConverterUtils::CreateBinaryRowFieldToStringConverter(
+        arrow::timestamp(arrow::TimeUnit::MICRO, "UTC"), /*legacy_partition_name_enabled=*/false));
+    ASSERT_OK(DataConverterUtils::CreateBinaryRowFieldToStringConverter(
+        arrow::timestamp(arrow::TimeUnit::MICRO, "UTC"), /*legacy_partition_name_enabled=*/true));
+}
+
+TEST(DataConverterUtilsTest, TestNullFieldWriterKeepsNonCompactSlots) {
+    auto pool = GetDefaultPool();
+    std::vector<std::shared_ptr<arrow::DataType>> types = {
+        arrow::timestamp(arrow::TimeUnit::MICRO), arrow::decimal128(38, 2),
+        arrow::timestamp(arrow::TimeUnit::MILLI), arrow::decimal128(10, 2)};
+    BinaryRow row(types.size());
+    BinaryRowWriter writer(&row, 0, pool.get());
+    for (size_t idx = 0; idx < types.size(); idx++) {
+        DataConverterUtils::CreateNullFieldWriter(types[idx])(idx, &writer);
+    }
+    writer.Complete();
+    for (size_t idx = 0; idx < types.size(); idx++) {
+        ASSERT_TRUE(row.IsNullAt(idx));
+    }
+    // Same bytes as a row written through the typed null writers of BinaryRowWriter.
+    BinaryRow expected(types.size());
+    BinaryRowWriter expected_writer(&expected, 0, pool.get());
+    expected_writer.WriteTimestamp(0, std::nullopt, 6);
+    expected_writer.WriteDecimal(1, std::nullopt, 38);
+    expected_writer.SetNullAt(2);
+    expected_writer.SetNullAt(3);
+    expected_writer.Complete();
+    ASSERT_EQ(expected, row);
 }
 
 }  // namespace paimon::test

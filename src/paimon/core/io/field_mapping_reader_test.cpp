@@ -293,6 +293,50 @@ TEST_F(FieldMappingReaderTest, TestGenerateSinglePartitionArray) {
     }
 }
 
+TEST_F(FieldMappingReaderTest, TestGenerateParameterizedPartitionArray) {
+    PartitionInfo partition_info;
+    partition_info.partition_read_schema = {
+        DataField(0, arrow::field("f", arrow::float32())),
+        DataField(1, arrow::field("d", arrow::float64())),
+        DataField(2, arrow::field("ts3", arrow::timestamp(arrow::TimeUnit::MILLI))),
+        DataField(3, arrow::field("ts6", arrow::timestamp(arrow::TimeUnit::MICRO))),
+        DataField(4, arrow::field("dec10", arrow::decimal128(10, 2))),
+        DataField(5, arrow::field("dec38", arrow::decimal128(38, 10)))};
+    partition_info.idx_in_target_read_schema = {0, 1, 2, 3, 4, 5};
+    partition_info.idx_in_partition = {0, 1, 2, 3, 4, 5};
+
+    NonPartitionInfo non_part_info;
+    auto field_mapping = std::make_unique<FieldMapping>(partition_info, non_part_info,
+                                                        /*non_exist_field_info=*/std::nullopt);
+    Decimal::int128_t big = -123456789012345678;
+    big = big * 1000000000000 - 5;
+    auto partition = BinaryRowGenerator::GenerateRow(
+        {1.5f, -0.25, TimestampType(Timestamp(-500, 0), 3),
+         TimestampType(Timestamp(1704067200123L, 456000), 6), Decimal(10, 2, -300),
+         Decimal(38, 10, big)},
+        pool_.get());
+    ASSERT_OK_AND_ASSIGN(
+        auto mapping_reader,
+        FieldMappingReader::Create(
+            /*field_count=*/6, /*reader=*/nullptr, partition, std::move(field_mapping),
+            /*skip_map_selected_keys_filter_field_ids=*/{}, pool_));
+
+    ASSERT_OK_AND_ASSIGN(auto f_array, mapping_reader->GenerateSinglePartitionArray(0, 2));
+    ASSERT_EQ(checked_cast<arrow::FloatArray*>(f_array.get())->Value(1), 1.5f);
+    ASSERT_OK_AND_ASSIGN(auto d_array, mapping_reader->GenerateSinglePartitionArray(1, 2));
+    ASSERT_EQ(checked_cast<arrow::DoubleArray*>(d_array.get())->Value(1), -0.25);
+    ASSERT_OK_AND_ASSIGN(auto ts3_array, mapping_reader->GenerateSinglePartitionArray(2, 1));
+    ASSERT_EQ(checked_cast<arrow::TimestampArray*>(ts3_array.get())->Value(0), -500);
+    ASSERT_OK_AND_ASSIGN(auto ts6_array, mapping_reader->GenerateSinglePartitionArray(3, 1));
+    ASSERT_EQ(checked_cast<arrow::TimestampArray*>(ts6_array.get())->Value(0),
+              1704067200123456L);
+    ASSERT_OK_AND_ASSIGN(auto dec10_array, mapping_reader->GenerateSinglePartitionArray(4, 1));
+    ASSERT_EQ(checked_cast<arrow::Decimal128Array*>(dec10_array.get())->FormatValue(0), "-3.00");
+    ASSERT_OK_AND_ASSIGN(auto dec38_array, mapping_reader->GenerateSinglePartitionArray(5, 1));
+    ASSERT_EQ(checked_cast<arrow::Decimal128Array*>(dec38_array.get())->FormatValue(0),
+              "-12345678901234567800.0000000005");
+}
+
 TEST_F(FieldMappingReaderTest, TestReadWithOnlyPartitionField) {
     std::vector<DataField> read_fields = {DataField(2, arrow::field("f2", arrow::int32())),
                                           DataField(1, arrow::field("f1", arrow::int32()))};
