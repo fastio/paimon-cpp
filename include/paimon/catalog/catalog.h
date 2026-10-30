@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "paimon/catalog/identifier.h"
+#include "paimon/catalog/schema_change.h"
 #include "paimon/result.h"
 #include "paimon/snapshot/snapshot_info.h"
 #include "paimon/status.h"
@@ -140,6 +141,15 @@ class PAIMON_EXPORT Catalog {
     /// @return A status indicating success or failure.
     virtual Status RenameTable(const Identifier& from_table, const Identifier& to_table,
                                bool ignore_if_not_exists) = 0;
+
+    /// Commits top-level schema changes to the current main-branch schema.
+    ///
+    /// @param identifier Data table identifier. System tables and branch identifiers are rejected.
+    /// @param changes Changes applied together as one new schema. An empty list writes nothing.
+    /// @return The schema id visible after the call. A successful call that does not write a file
+    ///         returns the current schema id.
+    virtual Result<int64_t> CommitSchemaChanges(const Identifier& identifier,
+                                                const std::vector<SchemaChange>& changes) = 0;
 
     /// Gets a table.
     ///

@@ -24,6 +24,7 @@
 
 #include "arrow/type.h"
 #include "gtest/gtest.h"
+#include "paimon/catalog/schema_change.h"
 #include "paimon/fs/local/local_file_system.h"
 #include "paimon/status.h"
 #include "paimon/testing/utils/testharness.h"
@@ -200,4 +201,200 @@ TEST(SchemaManagerTest, TestListAllIds) {
     ASSERT_OK_AND_ASSIGN(auto ids, manager.ListAllIds());
     ASSERT_EQ(std::set<int64_t>(ids.begin(), ids.end()), std::set<int64_t>({0, 1, 2, 3, 4}));
 }
+
+namespace {
+
+Result<std::unique_ptr<TableSchema>> CreateBaseTable(SchemaManager* manager) {
+    auto schema = arrow::schema(
+        {arrow::field("id", arrow::int32(), false), arrow::field("dt", arrow::utf8(), false),
+         arrow::field("name", arrow::utf8()), arrow::field("val", arrow::int32())});
+    std::map<std::string, std::string> options = {{"bucket", "1"}, {"bucket-key", "id"}};
+    return manager->CreateTable(schema, {"dt"}, {"id", "dt"}, options);
+}
+
+const DataField* FindField(const TableSchema& schema, const std::string& name) {
+    for (const auto& field : schema.Fields()) {
+        if (field.Name() == name) {
+            return &field;
+        }
+    }
+    return nullptr;
+}
+
+class ConflictOnceFileSystem : public LocalFileSystem {
+ public:
+    Status AtomicStore(const std::string& path, const std::string& content) override {
+        if (!failed_) {
+            failed_ = true;
+            return Status::Invalid("dst file already exist");
+        }
+        return LocalFileSystem::AtomicStore(path, content);
+    }
+
+ private:
+    bool failed_ = false;
+};
+
+class WriteThenConflictFileSystem : public LocalFileSystem {
+ public:
+    Status AtomicStore(const std::string& path, const std::string& content) override {
+        if (!conflicted_) {
+            conflicted_ = true;
+            PAIMON_RETURN_NOT_OK(LocalFileSystem::AtomicStore(path, content));
+            return Status::Invalid("dst file already exist");
+        }
+        return LocalFileSystem::AtomicStore(path, content);
+    }
+
+ private:
+    bool conflicted_ = false;
+};
+
+}  // namespace
+
+TEST(SchemaManagerTest, CommitSchemaChangesEvolvesFieldsAndOptions) {
+    auto fs = std::make_shared<LocalFileSystem>();
+    auto dir = UniqueTestDirectory::Create();
+    SchemaManager manager(fs, dir->Str());
+    ASSERT_NOK_WITH_MSG(manager.CommitSchemaChanges({}), "does not exist");
+
+    ASSERT_OK_AND_ASSIGN(std::unique_ptr<TableSchema> created, CreateBaseTable(&manager));
+    ASSERT_EQ(created->Id(), 0);
+    ASSERT_EQ(FindField(*created, "id")->Id(), 0);
+    ASSERT_EQ(FindField(*created, "name")->Id(), 2);
+    ASSERT_EQ(created->HighestFieldId(), 3);
+
+    ASSERT_OK_AND_ASSIGN(
+        int64_t same_type,
+        manager.CommitSchemaChanges({SchemaChange::UpdateColumnType("val", arrow::int32())}));
+    ASSERT_EQ(same_type, 0);
+    ASSERT_OK_AND_ASSIGN(std::vector<int64_t> ids_after_same_type, manager.ListAllIds());
+    ASSERT_EQ(ids_after_same_type, std::vector<int64_t>({0}));
+
+    auto extra = arrow::field("extra", arrow::int32());
+    extra = extra->WithMetadata(arrow::key_value_metadata({DataField::FIELD_ID}, {"99"}));
+    ASSERT_OK_AND_ASSIGN(int64_t added,
+                         manager.CommitSchemaChanges({SchemaChange::AddColumn(extra)}));
+    ASSERT_EQ(added, 1);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema1, manager.ReadSchema(1));
+    ASSERT_EQ(FindField(*schema1, "extra")->Id(), 4);
+    ASSERT_EQ(schema1->HighestFieldId(), 4);
+    ASSERT_EQ(FindField(*schema1, "name")->Id(), 2);
+
+    ASSERT_OK_AND_ASSIGN(int64_t renamed, manager.CommitSchemaChanges(
+                                              {SchemaChange::RenameColumn("name", "title")}));
+    ASSERT_EQ(renamed, 2);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema2, manager.ReadSchema(2));
+    ASSERT_EQ(FindField(*schema2, "title")->Id(), 2);
+    ASSERT_EQ(schema2->PrimaryKeys(), std::vector<std::string>({"id", "dt"}));
+    ASSERT_EQ(schema2->Options().at("bucket-key"), "id");
+    ASSERT_EQ(schema2->Comment(), created->Comment());
+
+    ASSERT_OK_AND_ASSIGN(int64_t renamed_key,
+                         manager.CommitSchemaChanges({SchemaChange::RenameColumn("dt", "day")}));
+    ASSERT_EQ(renamed_key, 3);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema3, manager.ReadSchema(3));
+    ASSERT_EQ(schema3->PartitionKeys(), std::vector<std::string>({"day"}));
+    ASSERT_EQ(schema3->PrimaryKeys(), std::vector<std::string>({"id", "day"}));
+    ASSERT_EQ(FindField(*schema3, "day")->Id(), 1);
+
+    ASSERT_OK_AND_ASSIGN(int64_t renamed_bucket_key,
+                         manager.CommitSchemaChanges({SchemaChange::RenameColumn("id", "pk")}));
+    ASSERT_EQ(renamed_bucket_key, 4);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> renamed_pk, manager.ReadSchema(4));
+    ASSERT_EQ(renamed_pk->PrimaryKeys(), std::vector<std::string>({"pk", "day"}));
+    ASSERT_EQ(renamed_pk->Options().at("bucket-key"), "pk");
+    ASSERT_EQ(FindField(*renamed_pk, "pk")->Id(), 0);
+
+    ASSERT_OK_AND_ASSIGN(
+        int64_t widened,
+        manager.CommitSchemaChanges({SchemaChange::UpdateColumnType("val", arrow::int64())}));
+    ASSERT_EQ(widened, 5);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema4, manager.ReadSchema(5));
+    ASSERT_EQ(FindField(*schema4, "val")->Id(), 3);
+    ASSERT_TRUE(FindField(*schema4, "val")->Type()->Equals(arrow::int64()));
+
+    ASSERT_NOK(manager.CommitSchemaChanges({SchemaChange::UpdateColumnType("pk", arrow::int64())}));
+    ASSERT_NOK(manager.CommitSchemaChanges({SchemaChange::UpdateColumnType("day", arrow::utf8())}));
+    ASSERT_NOK(manager.CommitSchemaChanges({SchemaChange::UpdateColumnType(
+        "val", arrow::struct_({arrow::field("x", arrow::int32())}))}));
+    ASSERT_NOK(
+        manager.CommitSchemaChanges({SchemaChange::UpdateColumnType("val", arrow::date32())}));
+    ASSERT_NOK(manager.CommitSchemaChanges({SchemaChange::DropColumn("pk")}));
+    ASSERT_NOK(manager.CommitSchemaChanges({SchemaChange::DropColumn("day")}));
+    ASSERT_NOK(manager.CommitSchemaChanges({SchemaChange::SetOption("bucket", "1")}));
+    ASSERT_NOK(manager.CommitSchemaChanges({SchemaChange::SetOption("BUCKET", "4")}));
+    ASSERT_NOK(manager.CommitSchemaChanges({SchemaChange::RemoveOption("bucket-key")}));
+    ASSERT_NOK(
+        manager.CommitSchemaChanges({SchemaChange::SetOption("snapshot.num-retained.min", "0")}));
+    ASSERT_OK_AND_ASSIGN(std::vector<int64_t> ids_after_reject, manager.ListAllIds());
+    ASSERT_EQ(std::set<int64_t>(ids_after_reject.begin(), ids_after_reject.end()),
+              std::set<int64_t>({0, 1, 2, 3, 4, 5}));
+
+    ASSERT_OK_AND_ASSIGN(int64_t option_set, manager.CommitSchemaChanges(
+                                                 {SchemaChange::SetOption("file.format", "orc")}));
+    ASSERT_EQ(option_set, 6);
+    ASSERT_OK_AND_ASSIGN(int64_t option_same, manager.CommitSchemaChanges(
+                                                  {SchemaChange::SetOption("file.format", "orc")}));
+    ASSERT_EQ(option_same, 6);
+    ASSERT_NOK(manager.CommitSchemaChanges({SchemaChange::RemoveOption("missing-option")}));
+    ASSERT_OK_AND_ASSIGN(int64_t option_reset,
+                         manager.CommitSchemaChanges({SchemaChange::RemoveOption("FILE.FORMAT")}));
+    ASSERT_EQ(option_reset, 7);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema6, manager.ReadSchema(7));
+    ASSERT_EQ(schema6->Options().count("file.format"), 0);
+    ASSERT_EQ(schema6->Options().at("bucket"), "1");
+
+    ASSERT_OK_AND_ASSIGN(int64_t dropped,
+                         manager.CommitSchemaChanges({SchemaChange::DropColumn("val")}));
+    ASSERT_EQ(dropped, 8);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema7, manager.ReadSchema(8));
+    ASSERT_EQ(FindField(*schema7, "val"), nullptr);
+    ASSERT_EQ(schema7->HighestFieldId(), 4);
+    ASSERT_OK_AND_ASSIGN(int64_t reused, manager.CommitSchemaChanges({SchemaChange::AddColumn(
+                                             arrow::field("again", arrow::utf8()))}));
+    ASSERT_EQ(reused, 9);
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema8, manager.ReadSchema(9));
+    ASSERT_EQ(FindField(*schema8, "again")->Id(), 5);
+    ASSERT_EQ(schema8->HighestFieldId(), 5);
+
+    ASSERT_OK_AND_ASSIGN(bool snapshot_dir, fs->Exists(dir->Str() + "/snapshot"));
+    ASSERT_FALSE(snapshot_dir);
+}
+
+TEST(SchemaManagerTest, CommitSchemaChangesRetriesAtomicStoreConflict) {
+    auto fs = std::make_shared<LocalFileSystem>();
+    auto dir = UniqueTestDirectory::Create();
+    SchemaManager creator(fs, dir->Str());
+    ASSERT_OK(CreateBaseTable(&creator));
+
+    auto conflict_fs = std::make_shared<ConflictOnceFileSystem>();
+    SchemaManager manager(conflict_fs, dir->Str());
+    ASSERT_OK_AND_ASSIGN(int64_t added, manager.CommitSchemaChanges({SchemaChange::AddColumn(
+                                            arrow::field("extra", arrow::int32()))}));
+    ASSERT_EQ(added, 1);
+    ASSERT_OK_AND_ASSIGN(std::vector<int64_t> ids, manager.ListAllIds());
+    ASSERT_EQ(std::set<int64_t>(ids.begin(), ids.end()), std::set<int64_t>({0, 1}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema1, manager.ReadSchema(1));
+    ASSERT_NE(FindField(*schema1, "extra"), nullptr);
+}
+
+TEST(SchemaManagerTest, CommitSchemaChangesKeepsWinnerWhenReplayIsInvalid) {
+    auto fs = std::make_shared<LocalFileSystem>();
+    auto dir = UniqueTestDirectory::Create();
+    SchemaManager creator(fs, dir->Str());
+    ASSERT_OK(CreateBaseTable(&creator));
+
+    auto conflict_fs = std::make_shared<WriteThenConflictFileSystem>();
+    SchemaManager manager(conflict_fs, dir->Str());
+    ASSERT_NOK(manager.CommitSchemaChanges(
+        {SchemaChange::AddColumn(arrow::field("extra", arrow::int32()))}));
+    ASSERT_OK_AND_ASSIGN(std::vector<int64_t> ids, manager.ListAllIds());
+    ASSERT_EQ(std::set<int64_t>(ids.begin(), ids.end()), std::set<int64_t>({0, 1}));
+    ASSERT_OK_AND_ASSIGN(std::shared_ptr<TableSchema> schema1, manager.ReadSchema(1));
+    ASSERT_NE(FindField(*schema1, "extra"), nullptr);
+    ASSERT_OK_AND_ASSIGN(bool schema2, fs->Exists(dir->Str() + "/schema/schema-2"));
+    ASSERT_FALSE(schema2);
+}
+
 }  // namespace paimon::test

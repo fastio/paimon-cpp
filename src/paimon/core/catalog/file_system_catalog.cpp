@@ -169,6 +169,15 @@ Status FileSystemCatalog::CreateTable(const Identifier& identifier, ArrowSchema*
     return Status::OK();
 }
 
+Result<int64_t> FileSystemCatalog::CommitSchemaChanges(const Identifier& identifier,
+                                                       const std::vector<SchemaChange>& changes) {
+    PAIMON_RETURN_NOT_OK(CatalogUtils::CheckNotBranch(identifier, "commitSchemaChanges"));
+    PAIMON_RETURN_NOT_OK(CatalogUtils::CheckNotSystemTable(identifier, "commitSchemaChanges"));
+    PAIMON_ASSIGN_OR_RAISE(std::string table_path, NewDataTablePath(warehouse_, identifier));
+    SchemaManager schema_manager(fs_, table_path);
+    return schema_manager.CommitSchemaChanges(changes);
+}
+
 Result<std::optional<std::shared_ptr<TableSchema>>> FileSystemCatalog::TableSchemaExists(
     const Identifier& identifier) const {
     PAIMON_ASSIGN_OR_RAISE(bool is_system_table, IsSystemTable(identifier));

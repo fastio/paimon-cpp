@@ -125,6 +125,8 @@ class TableSchema : public DataSchema, public Jsonizable<TableSchema> {
     }
 
  private:
+    friend class SchemaManager;
+
     JSONIZABLE_FRIEND_AND_DEFAULT_CTOR(TableSchema);
 
     static Result<std::unique_ptr<TableSchema>> InitSchema(

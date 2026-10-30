@@ -26,6 +26,7 @@
 #include <string>
 #include <vector>
 
+#include "paimon/catalog/schema_change.h"
 #include "paimon/core/schema/table_schema.h"
 #include "paimon/fs/file_system.h"
 #include "paimon/result.h"
@@ -54,11 +55,20 @@ class SchemaManager {
         const std::vector<std::string>& primary_keys,
         const std::map<std::string, std::string>& options);
 
+    /// Applies `changes` to the latest schema and writes the next schema file.
+    /// Returns the visible schema id. Validation and apply errors write nothing.
+    Result<int64_t> CommitSchemaChanges(const std::vector<SchemaChange>& changes);
+
     std::string SchemaDirectory() const;
     Result<bool> SchemaExists(int64_t id) const;
     Result<std::vector<int64_t>> ListAllIds() const;
 
  private:
+    Result<std::unique_ptr<TableSchema>> ApplySchemaChanges(
+        const TableSchema& latest, const std::vector<SchemaChange>& changes) const;
+    Status AddEvolvedColumn(std::vector<DataField>* fields, int32_t* highest_field_id,
+                            const std::shared_ptr<arrow::Field>& field) const;
+
     std::string BranchPath() const;
     std::string ToSchemaPath(int64_t schema_id) const;
 

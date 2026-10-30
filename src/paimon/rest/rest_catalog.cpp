@@ -442,4 +442,9 @@ Result<std::vector<SnapshotInfo>> RestCatalog::ListSnapshots(const Identifier& i
     return result;
 }
 
+Result<int64_t> RestCatalog::CommitSchemaChanges(const Identifier&,
+                                                 const std::vector<SchemaChange>&) {
+    return Status::NotImplemented("REST catalog schema commit is not implemented");
+}
+
 }  // namespace paimon
