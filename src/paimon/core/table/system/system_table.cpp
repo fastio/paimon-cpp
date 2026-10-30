@@ -160,6 +160,16 @@ const std::vector<SystemTableRegistryEntry>& SystemTableRegistry() {
              return std::make_shared<FilesSystemTable>(fs, table_path, std::move(branch),
                                                        table_schema, std::move(options));
          }},
+        {TablePartitionsSystemTable::kName,
+         [](const std::shared_ptr<FileSystem>& fs, const std::string& table_path,
+            const std::shared_ptr<TableSchema>& table_schema,
+            const std::map<std::string, std::string>& dynamic_options)
+             -> Result<std::shared_ptr<SystemTable>> {
+             auto options = MergeOptions(table_schema, dynamic_options);
+             auto branch = LoadBranch(options);
+             return std::make_shared<TablePartitionsSystemTable>(fs, table_path, std::move(branch),
+                                                                table_schema, std::move(options));
+         }},
     };
     return registry;
 }

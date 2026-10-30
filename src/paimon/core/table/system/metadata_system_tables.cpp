@@ -20,6 +20,7 @@
 #include "paimon/core/table/system/metadata_system_tables.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <ctime>
@@ -67,9 +68,12 @@
 #include "paimon/core/utils/snapshot_manager.h"
 #include "paimon/core/utils/tag_manager.h"
 #include "paimon/data/timestamp.h"
+#include "paimon/defs.h"
 #include "paimon/fs/file_system.h"
+#include "paimon/fs/file_system_factory.h"
 #include "paimon/memory/memory_pool.h"
 #include "paimon/status.h"
+#include "paimon/table/source/file_column_stats.h"
 #include "rapidjson/document.h"
 #include "rapidjson/stringbuffer.h"
 #include "rapidjson/writer.h"
@@ -219,9 +223,33 @@ Result<std::shared_ptr<FileStorePathFactory>> CreatePathFactory(
     return path_factory;
 }
 
-Result<std::optional<Snapshot>> LatestSnapshot(const MetadataSystemTableContext& context) {
+Result<int64_t> ParseSnapshotId(const std::string& text) {
+    int64_t snapshot_id = 0;
+    const char* begin = text.data();
+    const char* end = begin + text.size();
+    auto parsed = std::from_chars(begin, end, snapshot_id);
+    if (parsed.ec != std::errc() || parsed.ptr != end) {
+        return Status::Invalid("Invalid scan.snapshot-id: expected a signed 64-bit integer");
+    }
+    return snapshot_id;
+}
+
+// Honor scan.snapshot-id when the caller pinned a snapshot. An unset option keeps
+// the latest snapshot. A missing id is NotExist so readers cannot silently move
+// forward to a newer commit.
+Result<std::optional<Snapshot>> SelectedSnapshot(const MetadataSystemTableContext& context) {
     SnapshotManager snapshot_manager(context.fs, context.table_path, context.branch);
-    return snapshot_manager.LatestSnapshot();
+    auto pinned = context.options.find(Options::SCAN_SNAPSHOT_ID);
+    if (pinned == context.options.end() || pinned->second.empty()) {
+        return snapshot_manager.LatestSnapshot();
+    }
+    PAIMON_ASSIGN_OR_RAISE(int64_t snapshot_id, ParseSnapshotId(pinned->second));
+    PAIMON_ASSIGN_OR_RAISE(bool exists, snapshot_manager.SnapshotExists(snapshot_id));
+    if (!exists) {
+        return Status::NotExist(fmt::format("Snapshot {} does not exist", snapshot_id));
+    }
+    PAIMON_ASSIGN_OR_RAISE(Snapshot snapshot, snapshot_manager.LoadSnapshot(snapshot_id));
+    return std::optional<Snapshot>(std::move(snapshot));
 }
 
 Result<std::vector<ManifestFileMeta>> ReadDataManifests(
@@ -259,7 +287,7 @@ Result<std::vector<ManifestEntry>> ReadLatestManifestEntries(
     const MetadataSystemTableContext& context,
     const std::shared_ptr<FileStorePathFactory>& path_factory, const CoreOptions& core_options,
     const std::shared_ptr<MemoryPool>& pool) {
-    PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> snapshot, LatestSnapshot(context));
+    PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> snapshot, SelectedSnapshot(context));
     if (!snapshot) {
         return std::vector<ManifestEntry>();
     }
@@ -575,9 +603,7 @@ Result<std::vector<GenericRow>> SnapshotsSystemTable::BuildRows() const {
         row.SetField(2, StringValue(snapshot.CommitUser()));
         row.SetField(3, snapshot.CommitIdentifier());
         row.SetField(4, StringValue(Snapshot::CommitKind::ToString(snapshot.GetCommitKind())));
-        PAIMON_ASSIGN_OR_RAISE(VariantType commit_time,
-                               LocalTimestampMillisValue(snapshot.TimeMillis()));
-        row.SetField(5, commit_time);
+        row.SetField(5, TimestampMillisValue(snapshot.TimeMillis()));
         row.SetField(6, StringValue(snapshot.BaseManifestList()));
         row.SetField(7, StringValue(snapshot.DeltaManifestList()));
         row.SetField(8, OptionalStringValue(snapshot.ChangelogManifestList()));
@@ -639,9 +665,7 @@ Result<std::vector<GenericRow>> SchemasSystemTable::BuildRows() const {
         row.SetField(3, StringValue(primary_keys_json));
         row.SetField(4, StringValue(options_json));
         row.SetField(5, OptionalStringValue(table_schema->Comment()));
-        PAIMON_ASSIGN_OR_RAISE(VariantType update_time,
-                               LocalTimestampMillisValue(table_schema->TimeMillis()));
-        row.SetField(6, update_time);
+        row.SetField(6, TimestampMillisValue(table_schema->TimeMillis()));
         rows.push_back(std::move(row));
     }
 
@@ -798,7 +822,7 @@ Result<std::shared_ptr<arrow::Schema>> ManifestsSystemTable::ArrowSchema() const
 
 Result<std::vector<GenericRow>> ManifestsSystemTable::BuildRows() const {
     PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> schema, ArrowSchema());
-    PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> snapshot, LatestSnapshot(context_));
+    PAIMON_ASSIGN_OR_RAISE(std::optional<Snapshot> snapshot, SelectedSnapshot(context_));
     if (!snapshot) {
         return std::vector<GenericRow>();
     }
@@ -964,6 +988,249 @@ Result<std::vector<GenericRow>> FilesSystemTable::BuildRows() const {
         rows.push_back(std::move(row));
     }
     return rows;
+}
+
+namespace {
+
+struct AggregatedPartitionStats {
+    int64_t record_count = 0;
+    int64_t file_size_in_bytes = 0;
+    int64_t file_count = 0;
+    int64_t last_file_creation_time_millis = 0;
+    bool has_creation_time = false;
+};
+
+Result<std::string> PartitionKeyString(const std::shared_ptr<FileStorePathFactory>& path_factory,
+                                       const BinaryRow& partition) {
+    if (partition.GetFieldCount() <= 0) {
+        return std::string();
+    }
+    PAIMON_ASSIGN_OR_RAISE(auto partition_values, path_factory->GeneratePartitionVector(partition));
+    std::string partition_key;
+    for (const auto& [key, value] : partition_values) {
+        if (!partition_key.empty()) {
+            partition_key += "/";
+        }
+        partition_key += key + "=" + value;
+    }
+    return partition_key;
+}
+
+std::optional<Literal> FiniteLiteral(Result<Literal> literal) {
+    if (!literal.ok() || literal.value().IsNull()) {
+        return std::nullopt;
+    }
+    Literal value = std::move(literal).value();
+    if (value.GetType() == FieldType::FLOAT && !std::isfinite(value.GetValue<float>())) {
+        return std::nullopt;
+    }
+    if (value.GetType() == FieldType::DOUBLE && !std::isfinite(value.GetValue<double>())) {
+        return std::nullopt;
+    }
+    return value;
+}
+
+std::optional<Literal> LiteralAt(const std::vector<DataField>& fields, const InternalRow* row,
+                                 const std::vector<InternalRow::FieldGetterFunc>& getters,
+                                 int32_t index) {
+    if (row == nullptr || index < 0 || index >= row->GetFieldCount() ||
+        index >= static_cast<int32_t>(getters.size()) || row->IsNullAt(index)) {
+        return std::nullopt;
+    }
+    return FiniteLiteral(DataDefine::VariantValueToLiteral(getters[static_cast<size_t>(index)](*row),
+                                                           fields[static_cast<size_t>(index)].Type()->id()));
+}
+
+}  // namespace
+
+TablePartitionsSystemTable::TablePartitionsSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path,
+                                             std::string branch,
+                                             std::shared_ptr<TableSchema> table_schema,
+                                             std::map<std::string, std::string> options)
+    : InMemorySystemTable(table_path),
+      context_(CreateMetadataContext(std::move(fs), std::move(table_path), std::move(branch),
+                                     std::move(table_schema), std::move(options))) {}
+
+std::string TablePartitionsSystemTable::Name() const {
+    return kName;
+}
+
+Result<std::shared_ptr<arrow::Schema>> TablePartitionsSystemTable::ArrowSchema() const {
+    return arrow::schema({
+        arrow::field("partition", arrow::utf8(), /*nullable=*/true),
+        arrow::field("record_count", arrow::int64(), /*nullable=*/false),
+        arrow::field("file_size_in_bytes", arrow::int64(), /*nullable=*/false),
+        arrow::field("file_count", arrow::int64(), /*nullable=*/false),
+        arrow::field("last_file_creation_time", arrow::timestamp(arrow::TimeUnit::MILLI),
+                     /*nullable=*/true),
+    });
+}
+
+Result<std::vector<GenericRow>> TablePartitionsSystemTable::BuildRows() const {
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<arrow::Schema> schema, ArrowSchema());
+    std::shared_ptr<MemoryPool> pool = GetDefaultPool();
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CreateCoreOptions(context_));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStorePathFactory> path_factory,
+                           CreatePathFactory(context_, core_options, pool));
+    PAIMON_ASSIGN_OR_RAISE(std::vector<ManifestEntry> entries,
+                           ReadLatestDataFiles(context_, path_factory, core_options, pool));
+
+    const bool partitioned = !context_.table_schema->PartitionKeys().empty();
+    std::map<std::string, AggregatedPartitionStats> by_partition;
+    for (const auto& entry : entries) {
+        if (!(entry.Kind() == FileKind::Add())) {
+            continue;
+        }
+        std::string partition_key;
+        if (partitioned) {
+            PAIMON_ASSIGN_OR_RAISE(partition_key,
+                                   PartitionKeyString(path_factory, entry.Partition()));
+        }
+        auto& stats = by_partition[partition_key];
+        const auto& file = entry.File();
+        stats.record_count += file->row_count;
+        stats.file_size_in_bytes += file->file_size;
+        stats.file_count++;
+        int64_t creation_millis = file->creation_time.GetMillisecond();
+        if (!stats.has_creation_time || creation_millis > stats.last_file_creation_time_millis) {
+            stats.last_file_creation_time_millis = creation_millis;
+            stats.has_creation_time = true;
+        }
+    }
+
+    std::vector<GenericRow> rows;
+    rows.reserve(by_partition.size());
+    for (const auto& [partition_key, stats] : by_partition) {
+        GenericRow row(schema->num_fields());
+        if (!partitioned) {
+            row.SetField(0, NullType());
+        } else {
+            row.SetField(0, StringValue(partition_key));
+        }
+        row.SetField(1, stats.record_count);
+        row.SetField(2, stats.file_size_in_bytes);
+        row.SetField(3, stats.file_count);
+        row.SetField(4, stats.has_creation_time
+                            ? TimestampMillisValue(stats.last_file_creation_time_millis)
+                            : VariantType(NullType()));
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+Result<std::vector<DataFileColumnStats>> ReadDataFileColumnStats(
+    const std::string& table_path, const std::string& schema_json,
+    const std::map<std::string, std::string>& options, int64_t snapshot_id) {
+    auto file_system = options.find(Options::FILE_SYSTEM);
+    std::string file_system_identifier =
+        file_system == options.end() || file_system->second.empty() ? "local" : file_system->second;
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<FileSystem> owned_fs,
+                           FileSystemFactory::Get(file_system_identifier, table_path, options));
+    std::shared_ptr<FileSystem> fs = std::move(owned_fs);
+
+    PAIMON_ASSIGN_OR_RAISE(std::unique_ptr<TableSchema> parsed_schema,
+                           TableSchema::CreateFromJson(schema_json));
+    std::shared_ptr<TableSchema> table_schema = std::move(parsed_schema);
+    auto branch = options.find(Options::BRANCH);
+    std::string branch_name = BranchManager::DEFAULT_MAIN_BRANCH;
+    if (branch != options.end() && !branch->second.empty()) {
+        branch_name = branch->second;
+    }
+    auto scan_options = options;
+    scan_options[Options::SCAN_SNAPSHOT_ID] = std::to_string(snapshot_id);
+    MetadataSystemTableContext context = CreateMetadataContext(
+        std::move(fs), table_path, std::move(branch_name), table_schema, std::move(scan_options));
+
+    std::shared_ptr<MemoryPool> pool = GetDefaultPool();
+    PAIMON_ASSIGN_OR_RAISE(CoreOptions core_options, CreateCoreOptions(context));
+    PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<FileStorePathFactory> path_factory,
+                           CreatePathFactory(context, core_options, pool));
+    PAIMON_ASSIGN_OR_RAISE(std::vector<ManifestEntry> entries,
+                           ReadLatestDataFiles(context, path_factory, core_options, pool));
+
+    const std::vector<DataField>& value_stats_fields = table_schema->Fields();
+    std::shared_ptr<arrow::Schema> stats_schema =
+        DataField::ConvertDataFieldsToArrowSchema(value_stats_fields);
+    PAIMON_ASSIGN_OR_RAISE(std::vector<InternalRow::FieldGetterFunc> getters,
+                           InternalRowUtils::CreateFieldGetters(stats_schema, /*use_view=*/false));
+
+    std::vector<DataField> partition_fields;
+    std::vector<InternalRow::FieldGetterFunc> partition_getters;
+    partition_fields.reserve(table_schema->PartitionKeys().size());
+    for (const auto& partition_key : table_schema->PartitionKeys()) {
+        PAIMON_ASSIGN_OR_RAISE(DataField field, table_schema->GetField(partition_key));
+        partition_fields.push_back(std::move(field));
+    }
+    if (!partition_fields.empty()) {
+        std::shared_ptr<arrow::Schema> partition_schema =
+            DataField::ConvertDataFieldsToArrowSchema(partition_fields);
+        PAIMON_ASSIGN_OR_RAISE(partition_getters, InternalRowUtils::CreateFieldGetters(
+                                                      partition_schema, /*use_view=*/false));
+    }
+
+    std::vector<DataFileColumnStats> result;
+    for (const auto& entry : entries) {
+        if (!(entry.Kind() == FileKind::Add())) {
+            continue;
+        }
+        const std::shared_ptr<DataFileMeta>& file = entry.File();
+        PAIMON_ASSIGN_OR_RAISE(std::shared_ptr<TableSchema> data_schema,
+                               LoadDataSchema(context, file->schema_id));
+        PAIMON_ASSIGN_OR_RAISE(std::vector<DataField> data_stats_fields,
+                               ProjectWriteFields(data_schema, *file));
+        const bool need_mapping =
+            data_schema->Id() != table_schema->Id() || file->write_cols.has_value();
+        auto stats_evolution = std::make_shared<SimpleStatsEvolution>(
+            data_stats_fields, value_stats_fields, need_mapping, pool);
+        PAIMON_ASSIGN_OR_RAISE(
+            SimpleStatsEvolution::EvolutionStats evolved,
+            stats_evolution->Evolution(file->value_stats, file->row_count, file->value_stats_cols));
+
+        DataFileColumnStats file_stats;
+        file_stats.row_count = file->row_count;
+        file_stats.delete_row_count = file->delete_row_count;
+        file_stats.schema_id = file->schema_id;
+        file_stats.values_mapped = need_mapping;
+        file_stats.columns.resize(value_stats_fields.size());
+        for (int32_t i = 0; i < static_cast<int32_t>(value_stats_fields.size()); ++i) {
+            FileColumnBound& bound = file_stats.columns[static_cast<size_t>(i)];
+            if (evolved.null_counts && i < evolved.null_counts->Size() &&
+                !evolved.null_counts->IsNullAt(i)) {
+                bound.null_count = evolved.null_counts->GetLong(i);
+            }
+            if (need_mapping) {
+                continue;
+            }
+            auto min_value = LiteralAt(value_stats_fields, evolved.min_values.get(), getters, i);
+            auto max_value = LiteralAt(value_stats_fields, evolved.max_values.get(), getters, i);
+            if (min_value && max_value) {
+                bound.min_value = std::move(min_value);
+                bound.max_value = std::move(max_value);
+            }
+        }
+
+        std::map<std::string, int32_t> field_index;
+        for (int32_t i = 0; i < static_cast<int32_t>(value_stats_fields.size()); ++i) {
+            field_index.emplace(value_stats_fields[static_cast<size_t>(i)].Name(), i);
+        }
+        for (int32_t i = 0; i < static_cast<int32_t>(partition_fields.size()); ++i) {
+            auto index = field_index.find(partition_fields[static_cast<size_t>(i)].Name());
+            if (index == field_index.end()) {
+                continue;
+            }
+            auto literal =
+                LiteralAt(partition_fields, &entry.Partition(), partition_getters, i);
+            if (!literal) {
+                continue;
+            }
+            FileColumnBound& bound = file_stats.columns[static_cast<size_t>(index->second)];
+            bound.min_value = literal;
+            bound.max_value = literal;
+            bound.null_count = entry.Partition().IsNullAt(i) ? file->row_count : 0;
+        }
+        result.push_back(std::move(file_stats));
+    }
+    return result;
 }
 
 }  // namespace paimon

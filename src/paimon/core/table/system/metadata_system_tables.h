@@ -148,6 +148,25 @@ class ManifestsSystemTable : public InMemorySystemTable {
     MetadataSystemTableContext context_;
 };
 
+/// System table for `T$partitions`, aggregating ADD-file stats of one snapshot.
+/// record_count is the sum of file row counts. It is not a primary-key merge and
+/// it is not adjusted by deletion vectors.
+class TablePartitionsSystemTable : public InMemorySystemTable {
+ public:
+    static constexpr const char* kName = "partitions";
+
+    TablePartitionsSystemTable(std::shared_ptr<FileSystem> fs, std::string table_path, std::string branch,
+                          std::shared_ptr<TableSchema> table_schema,
+                          std::map<std::string, std::string> options);
+
+    std::string Name() const override;
+    Result<std::shared_ptr<arrow::Schema>> ArrowSchema() const override;
+    Result<std::vector<GenericRow>> BuildRows() const override;
+
+ private:
+    MetadataSystemTableContext context_;
+};
+
 /// System table for `T$files`, exposing data file metadata in the latest snapshot.
 class FilesSystemTable : public InMemorySystemTable {
  public:
